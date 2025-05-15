@@ -5,6 +5,7 @@ from typing import Any
 import polars as pl
 from mcp.server.fastmcp import Context
 from polars.exceptions import ColumnNotFoundError
+from upphandlat_mcp.core.config import CsvSourcesConfig
 from upphandlat_mcp.lifespan.context import LifespanContext
 from upphandlat_mcp.utils.dataframe_ops import (
     get_column_names_from_df,
@@ -14,9 +15,11 @@ from upphandlat_mcp.utils.dataframe_ops import (
 logger = logging.getLogger(__name__)
 
 
-async def list_available_dataframes(ctx: Context) -> list[str] | dict[str, str]:
+async def list_available_dataframes(
+    ctx: Context,
+) -> list[dict[str, str]] | dict[str, str]:
     """
-    Retrieves the list of names for all loaded DataFrames (data sources).
+    Retrieves the list of names and descriptions for all loaded DataFrames.
 
     Use this tool to find out which data sources are available for querying.
     Each name can then be used as the 'dataframe_name' parameter in other tools.
@@ -25,22 +28,65 @@ async def list_available_dataframes(ctx: Context) -> list[str] | dict[str, str]:
         ctx: The MCP context.
 
     Returns:
-        A list of strings, where each string is an available DataFrame name.
-        Returns an error dictionary if the DataFrames are not available.
+        A list of dictionaries, where each dictionary has "name" and "description" keys.
+        Returns an error dictionary if DataFrames or configuration are not available.
     """
     try:
         lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
-        return list(lifespan_ctx["dataframes"].keys())
-    except KeyError:
-        await ctx.error(
-            "DataFrame dictionary 'dataframes' not found in lifespan context. Was data loading successful?"
+        dataframes_dict = lifespan_ctx["dataframes"]
+        csv_sources_config: CsvSourcesConfig = lifespan_ctx["csv_sources_config"]
+
+        descriptions_map: dict[str, str | None] = {}
+        if csv_sources_config and csv_sources_config.sources:
+            descriptions_map = {
+                source.name: source.description
+                for source in csv_sources_config.sources
+            }
+
+        result_list: list[dict[str, str]] = []
+        for name in dataframes_dict.keys():
+            description = descriptions_map.get(name)
+            description_to_use = (
+                description if description else "No description available."
+            )
+
+            if name not in descriptions_map:
+                logger.warning(
+                    f"DataFrame '{name}' is loaded but has no corresponding entry "
+                    f"in CsvSourcesConfig. Description will be default."
+                )
+
+            result_list.append({"name": name, "description": description_to_use})
+
+        if not result_list and not dataframes_dict:  # If no dataframes were loaded at all
+            logger.info("No dataframes available in the context.")
+        elif not result_list and dataframes_dict:  # Should not happen if dataframes_dict has keys
+            logger.warning(
+                "Dataframes dictionary has keys but result list is empty. Check logic."
+            )
+
+        return result_list
+
+    except KeyError as e:
+        missing_key = e.args[0] if e.args else "Unknown key"
+        error_msg = (
+            f"Required key '{missing_key}' not found in lifespan context. "
+            "Was data loading successful and context properly configured?"
         )
+        await ctx.error(error_msg)
+        logger.error(error_msg)
         return {
-            "error": "DataFrames not available. Server may be misconfigured or data failed to load."
+            "error": f"Context key '{missing_key}' missing. Server may be misconfigured or data failed to load."
         }
     except Exception as e:
-        await ctx.error(
-            f"An unexpected error occurred in list_available_dataframes: {e}",
+        error_msg = f"An unexpected error occurred in list_available_dataframes: {e}"
+        await ctx.error(error_msg, exc_info=True)
+        logger.error(error_msg, exc_info=True)
+        return {"error": f"An unexpected error occurred: {str(e)}"}
+
+
+async def list_columns(ctx: Context, dataframe_name: str) -> list[str] | dict[str, str]:
+    """
             exc_info=True,
         )
         return {"error": f"An unexpected error occurred: {str(e)}"}

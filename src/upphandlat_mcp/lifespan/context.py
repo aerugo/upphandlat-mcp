@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 class LifespanContext(TypedDict):
     dataframes: dict[str, pl.DataFrame]
     settings: Settings
+    csv_sources_config: CsvSourcesConfig
 
 
 @asynccontextmanager
@@ -69,6 +70,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[LifespanContext]:
         context_data: LifespanContext = {
             "dataframes": loaded_dataframes,
             "settings": app_settings,
+            "csv_sources_config": csv_sources_config,
         }
         yield context_data
 
