@@ -66,6 +66,9 @@ class CsvSource(BaseModel):
         ..., description="Unique identifier name for this CSV data source."
     )
     url: str = Field(..., description="URL from which to download the CSV file.")
+    description: str | None = Field(
+        None, description="Optional description of the data source."
+    )
     read_csv_options: ReadCsvOptions = Field(
         default_factory=lambda: ReadCsvOptions(),  # type: ignore[call-arg] # Pylance false positive
         description="Polars read_csv options for this source.",
