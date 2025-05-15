@@ -39,8 +39,7 @@ async def list_available_dataframes(
         descriptions_map: dict[str, str | None] = {}
         if csv_sources_config and csv_sources_config.sources:
             descriptions_map = {
-                source.name: source.description
-                for source in csv_sources_config.sources
+                source.name: source.description for source in csv_sources_config.sources
             }
 
         result_list: list[dict[str, str]] = []
@@ -58,9 +57,13 @@ async def list_available_dataframes(
 
             result_list.append({"name": name, "description": description_to_use})
 
-        if not result_list and not dataframes_dict:  # If no dataframes were loaded at all
+        if (
+            not result_list and not dataframes_dict
+        ):  # If no dataframes were loaded at all
             logger.info("No dataframes available in the context.")
-        elif not result_list and dataframes_dict:  # Should not happen if dataframes_dict has keys
+        elif (
+            not result_list and dataframes_dict
+        ):  # Should not happen if dataframes_dict has keys
             logger.warning(
                 "Dataframes dictionary has keys but result list is empty. Check logic."
             )
