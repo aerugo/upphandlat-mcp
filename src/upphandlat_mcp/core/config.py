@@ -44,6 +44,10 @@ class ReadCsvOptions(BaseModel):
     null_values: list[str] | str | None = Field(
         None, description="Values to interpret as null."
     )
+    infer_schema_length: int | None = Field( # ADDED LINE
+        None, # Default to None, so if not in YAML, Polars default is used.
+        description="Number of rows to infer schema from. If None, Polars default (usually 100) is used.", # ADDED LINE
+    ) # ADDED LINE
 
     def to_polars_args(self) -> dict[str, Any]:
         args = self.model_dump(exclude_none=True, exclude={"schema_overrides"})
