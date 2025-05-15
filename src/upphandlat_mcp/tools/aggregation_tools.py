@@ -39,19 +39,16 @@ async def _build_polars_aggregation_expressions(
             all_output_column_names.add(output_alias)
             try:
                 column_expression = pl.col(agg_config.column)
-                if function_name_str == "n_unique":
-                    aggregation_function = getattr(column_expression, "n_unique")
-                else:
-                    aggregation_function = getattr(column_expression, function_name_str)
+                aggregation_function = getattr(column_expression, function_name_str)
 
                 final_expression = aggregation_function().alias(output_alias)
                 polars_expressions.append(final_expression)
             except AttributeError:
                 raise ValueError(
-                    f"Invalid aggregation function '{function_name_str}' for Polars."
+                    f"Invalid aggregation function '{function_name_str}' for Polars on column '{agg_config.column}'."
                 )
             except Exception as e:
-                await ctx.warning(
+                logger.warning(
                     f"Could not build expression for {agg_config.column}.{function_name_str}(): {e}"
                 )
                 raise ValueError(
@@ -110,7 +107,7 @@ def _apply_calculated_fields(
                 otherwise_val = (
                     None
                     if cfg.on_division_by_zero == "null"
-                    else pl.lit(cfg.on_division_by_zero)
+                    else pl.lit(cfg.on_division_by_zero, dtype=pl.Float64)
                 )
                 polars_expr = (
                     pl.when(col_b_expr != 0).then(polars_expr).otherwise(otherwise_val)
@@ -146,7 +143,7 @@ def _apply_calculated_fields(
                     otherwise_val = (
                         None
                         if cfg.on_division_by_zero == "null"
-                        else pl.lit(cfg.on_division_by_zero)
+                        else pl.lit(cfg.on_division_by_zero, dtype=pl.Float64)
                     )
                     polars_expr = (
                         pl.when(constant_expr != 0)
@@ -164,7 +161,7 @@ def _apply_calculated_fields(
                     otherwise_val = (
                         None
                         if cfg.on_division_by_zero == "null"
-                        else pl.lit(cfg.on_division_by_zero)
+                        else pl.lit(cfg.on_division_by_zero, dtype=pl.Float64)
                     )
                     polars_expr = (
                         pl.when(input_col_expr != 0)
@@ -182,7 +179,7 @@ def _apply_calculated_fields(
                 otherwise_val = (
                     None
                     if cfg.on_division_by_zero == "null"
-                    else pl.lit(cfg.on_division_by_zero)
+                    else pl.lit(cfg.on_division_by_zero, dtype=pl.Float64)
                 )
                 polars_expr = (
                     pl.when(total_ref_col_expr != 0)
@@ -190,6 +187,9 @@ def _apply_calculated_fields(
                     .otherwise(otherwise_val)
                 )
         else:
+            w = ctx.error(
+                f"Unsupported calculated_field type: {getattr(field_config, 'calculation_type', 'Unknown')}"
+            )
             raise ValueError(
                 f"Unsupported calculated_field type: {getattr(field_config, 'calculation_type', 'Unknown')}"
             )
@@ -201,40 +201,65 @@ def _apply_calculated_fields(
 
 
 async def aggregate_data(
-    request: AggregationRequest, ctx: Context
+    ctx: Context,
+    dataframe_name: str,
+    request: AggregationRequest,
 ) -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    Performs aggregation and calculation on a specified DataFrame.
+
+    Args:
+        ctx: The MCP context.
+        dataframe_name: The name of the DataFrame to aggregate (from list_available_dataframes).
+        request: The AggregationRequest payload detailing grouping, aggregations, and calculations.
+
+    Returns:
+        A list of dictionaries representing the aggregated/calculated data,
+        or an error dictionary.
+    """
     await ctx.info(
-        f"Received aggregation request: Group by {request.group_by_columns}, "
+        f"Received aggregation request for DataFrame '{dataframe_name}': "
+        f"Group by {request.group_by_columns}, "
         f"Aggregations: {'Present and non-empty' if request.aggregations and len(request.aggregations) > 0 else 'None/Empty'}, "
         f"Calculated Fields: {'Present' if request.calculated_fields else 'None/Empty'}."
     )
 
     try:
         lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
-        source_df: pl.DataFrame = lifespan_ctx["df"]
+        df_dict = lifespan_ctx["dataframes"]
+        if dataframe_name not in df_dict:
+            await ctx.error(
+                f"DataFrame '{dataframe_name}' not found. Available: {list(df_dict.keys())}"
+            )
+            return {
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_available_dataframes() to see options."
+            }
+        source_df: pl.DataFrame = df_dict[dataframe_name]
     except KeyError:
-        await ctx.error("DataFrame 'df' not found in lifespan context.")
-        return {
-            "error": "DataFrame not available. Server may be misconfigured or data failed to load."
-        }
+        await ctx.error(
+            "DataFrame dictionary 'dataframes' not found in lifespan context."
+        )
+        return {"error": "DataFrames not available. Server may be misconfigured."}
 
     df_column_names = set(source_df.columns)
 
     for col in request.group_by_columns:
         if col not in df_column_names:
             await ctx.error(
-                f"Invalid group_by_column: '{col}' not found. Available: {list(df_column_names)}"
+                f"Invalid group_by_column for DataFrame '{dataframe_name}': '{col}' not found. Available: {list(df_column_names)}"
             )
-            return {"error": f"Invalid group_by_column: '{col}' not found."}
+            return {
+                "error": f"Invalid group_by_column: '{col}' not found in '{dataframe_name}'."
+            }
 
     if request.aggregations:
         for agg_config in request.aggregations:
             if agg_config.column not in df_column_names:
                 await ctx.error(
-                    f"Invalid aggregation source column: '{agg_config.column}' not found. Available: {list(df_column_names)}"
+                    f"Invalid aggregation source column for DataFrame '{dataframe_name}': '{agg_config.column}' not found. Available: {list(df_column_names)}"
                 )
                 return {
-                    "error": f"Invalid aggregation source column: '{agg_config.column}' not found."
+                    "error": f"Invalid aggregation source column: '{agg_config.column}' not found in '{dataframe_name}'."
                 }
     try:
         intermediate_df: pl.DataFrame
@@ -256,25 +281,39 @@ async def aggregate_data(
             intermediate_df = grouped_df.agg(polars_agg_expressions)
             columns_after_aggregation_or_grouping = aggregated_column_names
             await ctx.info(
-                f"Performed aggregation. Resulting columns: {intermediate_df.columns}"
+                f"Performed aggregation on '{dataframe_name}'. Resulting columns: {intermediate_df.columns}"
             )
         else:
-            intermediate_df = source_df
-            columns_after_aggregation_or_grouping = set(df_column_names)
+            if not request.group_by_columns:
+                await ctx.error("`group_by_columns` must be provided.")
+                return {
+                    "error": "`group_by_columns` must be provided even if no aggregations are performed."
+                }
+
+            intermediate_df = source_df.select(request.group_by_columns)
+            columns_after_aggregation_or_grouping = set(request.group_by_columns)
             await ctx.info(
-                "No aggregations requested. Proceeding with original columns for calculated fields."
+                f"No aggregations requested for '{dataframe_name}'. Initial columns for potential calculated fields: {intermediate_df.columns}."
             )
 
         if request.calculated_fields:
+
+            cols_available_for_calc = columns_after_aggregation_or_grouping
+            df_for_calc = intermediate_df
+
+            if not (request.aggregations and len(request.aggregations) > 0):
+                df_for_calc = source_df
+                cols_available_for_calc = df_column_names
+
             final_df = await asyncio.to_thread(
                 _apply_calculated_fields,
-                intermediate_df,
+                df_for_calc,
                 request.calculated_fields,
-                columns_after_aggregation_or_grouping,
+                cols_available_for_calc,
                 ctx,
             )
             await ctx.info(
-                f"Applied calculated fields. Resulting columns: {final_df.columns}"
+                f"Applied calculated fields to '{dataframe_name}'. Resulting columns: {final_df.columns}"
             )
         else:
             final_df = intermediate_df
@@ -282,64 +321,69 @@ async def aggregate_data(
         columns_to_select = list(request.group_by_columns)
 
         if request.aggregations and len(request.aggregations) > 0:
-            for agg_item in request.aggregations:
-                for func_item in agg_item.functions:
-                    alias = agg_item.rename.get(
-                        func_item.value, f"{agg_item.column}_{func_item.value}"
-                    )
-                    if alias not in columns_to_select:
-                        columns_to_select.append(alias)
+            for alias in columns_after_aggregation_or_grouping:
+                if alias not in columns_to_select:
+                    columns_to_select.append(alias)
 
         if request.calculated_fields:
             for cf_item in request.calculated_fields:
                 if cf_item.output_column_name not in columns_to_select:
                     columns_to_select.append(cf_item.output_column_name)
 
-        final_columns_present = [
+        final_columns_present_in_df = [
             col for col in columns_to_select if col in final_df.columns
         ]
 
-        if not final_columns_present:
-            if request.group_by_columns and all(
-                c in source_df.columns for c in request.group_by_columns
-            ):
-                await ctx.info(
-                    "No aggregations or calculated fields resulted in specified output columns other than group_by columns. "
-                    "Returning unique group_by columns from original data."
+        if not final_columns_present_in_df:
+            await ctx.warning(
+                f"No valid output columns to select in the final DataFrame for '{dataframe_name}'. "
+                f"Requested: {columns_to_select}, Available: {final_df.columns}. "
+                "This might happen if group_by_columns were requested but no aggregations or calculations produced other usable columns."
+            )
+            if all(gb_col in source_df.columns for gb_col in request.group_by_columns):
+                final_df_to_return = source_df.select(request.group_by_columns).unique(
+                    maintain_order=True
                 )
-                final_df_to_return = source_df.select(request.group_by_columns).unique()
+                if request.group_by_columns:
+                    final_df_to_return = final_df_to_return.sort(
+                        request.group_by_columns
+                    )
             else:
-                await ctx.warning(
-                    "No columns to select in the final DataFrame, or group_by columns are invalid."
-                )
                 return []
         else:
-            final_df_to_return = final_df.select(final_columns_present)
+            final_df_to_return = final_df.select(final_columns_present_in_df)
 
         if not (request.aggregations and len(request.aggregations) > 0):
-            if final_df_to_return.height > 0:
+            if final_df_to_return.height > 0 and final_df_to_return.columns:
                 final_df_to_return = final_df_to_return.unique(
-                    subset=final_df_to_return.columns
+                    subset=final_df_to_return.columns, maintain_order=True
                 )
 
-        if request.group_by_columns and all(
-            gbc in final_df_to_return.columns for gbc in request.group_by_columns
-        ):
-            final_df_to_return = final_df_to_return.sort(request.group_by_columns)
+        sortable_group_by_cols = [
+            gbc for gbc in request.group_by_columns if gbc in final_df_to_return.columns
+        ]
+        if sortable_group_by_cols:
+            final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
 
         await ctx.info(
-            f"Aggregation/calculation successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
+            f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
         )
         return final_df_to_return.to_dicts()
 
     except ValueError as ve:
-        await ctx.error(f"ValueError during aggregation processing: {ve}")
+        await ctx.error(
+            f"ValueError during aggregation processing for '{dataframe_name}': {ve}"
+        )
         return {"error": f"Configuration or processing error: {str(ve)}"}
     except pl.PolarsError as pe:
-        await ctx.error(f"Polars error during aggregation: {pe}", exc_info=True)
+        await ctx.error(
+            f"Polars error during aggregation for '{dataframe_name}': {pe}",
+            exc_info=True,
+        )
         return {"error": f"Data processing error with Polars: {str(pe)}"}
     except Exception as e:
         await ctx.error(
-            f"An unexpected error occurred during aggregation: {e}", exc_info=True
+            f"An unexpected error occurred during aggregation for '{dataframe_name}': {e}",
+            exc_info=True,
         )
         return {"error": f"An unexpected server error occurred: {str(e)}"}

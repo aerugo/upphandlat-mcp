@@ -1,69 +1,63 @@
-from mcp.server.fastmcp.prompts import base  # For potential use of structured messages
+# src/upphandlat_mcp/prompts/entry_prompt.py
+from mcp.server.fastmcp.prompts import base
 
 
 def csv_aggregator_entry_point() -> str:
-    """
-    Provides a general guide for an LLM on how to interact with the
-    Upphandlat MCP server and its tools.
-    """
     return (
-        "## Upphandlat Aggregator MCP Server Interaction Guide\n\n"
-        "**Objective:** You are interacting with a server that can analyze and aggregate data from a pre-loaded CSV file. Your goal is to use the available tools to answer user queries about this data.\n\n"
+        "## Upphandlat Multi-CSV Aggregator MCP Server Interaction Guide\n\n"
+        "**Objective:** You are interacting with a server that can analyze and aggregate data from multiple pre-loaded CSV files, each identified by a unique name. Your goal is to use the available tools to answer user queries about this data.\n\n"
+        "**Workflow:**\n"
+        "1.  **Discover Data Sources:** If you don't know which datasets are available, first use `list_available_dataframes()`.\n"
+        "2.  **Select Data Source:** For all other tools, you **MUST** provide the `dataframe_name` parameter, specifying which loaded dataset to query.\n"
+        "3.  **Understand Data Structure:** Use `list_columns(dataframe_name='your_chosen_df')` and `get_schema(dataframe_name='your_chosen_df')` for the selected DataFrame.\n"
+        "4.  **Query/Aggregate:** Use `get_distinct_column_values(...)` or `aggregate_data(...)` on the chosen DataFrame.\n\n"
         "**Available Tools & Common Use Cases:**\n\n"
-        "1.  **`list_columns()`:**\n"
-        "    *   **Use When:** You need to know what data fields (columns) are available in the CSV.\n"
-        '    *   **Example:** "What columns are in the dataset?"\n\n'
-        "2.  **`get_schema()`:**\n"
-        "    *   **Use When:** You need to know the data types of the columns (e.g., string, integer, float) to understand how they can be used in aggregations or calculations.\n"
-        '    *   **Example:** "What is the schema of the dataset?" or "What type is the \'sales\' column?"\n\n'
-        "3.  **`aggregate_data(request: AggregationRequest)`:**\n"
-        "    *   **Use When:** The user wants to summarize, group, or calculate new metrics from the data. This is the most powerful tool.\n"
-        "    *   **`AggregationRequest` Structure:** This tool takes a complex JSON object. You'll need to construct it carefully based on the user's request. Key parts:\n"
-        "        *   `group_by_columns` (list[str]): Columns to group by (e.g., ['category', 'region']).\n"
-        "        *   `aggregations` (list[Aggregation]): Operations on columns within each group.\n"
-        '            *   `Aggregation` object: `{ "column": "sales", "functions": ["sum", "mean"], "rename": {"sum": "total_sales"} }`\n'
-        "        *   `calculated_fields` (list[CalculatedFieldType], optional): New columns derived from aggregated results (e.g., profit = sales - cost).\n"
-        "            *   `CalculatedFieldType` can be `two_column_arithmetic`, `constant_arithmetic`, or `percentage_of_column`.\n"
+        "0.  **`list_available_dataframes()`:**\n"
+        "    *   **Use When:** You need to know the names of all loaded CSV datasets.\n"
+        '    *   **Example:** "What datasets are available?"\n\n'
+        "1.  **`list_columns(dataframe_name: str)`:**\n"
+        "    *   **Use When:** You need to know what data fields (columns) are available in a specific CSV dataset.\n"
+        "    *   **Example:** \"What columns are in the 'procurement_data' dataset?\" (Requires `dataframe_name='procurement_data'`)\n\n"
+        "2.  **`get_schema(dataframe_name: str)`:**\n"
+        "    *   **Use When:** You need to know the data types of the columns in a specific dataset.\n"
+        "    *   **Example:** \"What is the schema of the 'supplier_info' dataset?\" (Requires `dataframe_name='supplier_info'`)\n\n"
+        "3.  **`get_distinct_column_values(dataframe_name: str, column_name: str, ...)`:**\n"
+        "    *   **Use When:** You need to find unique values in a column of a specific dataset.\n"
+        "    *   **Example:** \"List unique categories in the 'products' dataset.\" (Requires `dataframe_name='products', column_name='category'`)\n\n"
+        "4.  **`aggregate_data(dataframe_name: str, request: AggregationRequest)`:**\n"
+        "    *   **Use When:** The user wants to summarize, group, or calculate new metrics from data in a specific dataset.\n"
+        "    *   **`dataframe_name` (str):** The name of the dataset to operate on.\n"
+        "    *   **`AggregationRequest` Structure:** (Same as before, defines grouping, aggregations, calculated fields for the chosen DataFrame)\n"
+        "        *   `group_by_columns` (list[str])\n"
+        "        *   `aggregations` (list[Aggregation], optional)\n"
+        "        *   `calculated_fields` (list[CalculatedFieldType], optional)\n"
         "    *   **Examples:**\n"
-        "        *   \"What is the total sales per region?\" -> Group by 'region', sum 'sales'.\n"
-        "        *   \"Calculate average quantity and total sales for each product category and region.\" -> Group by ['category', 'region'], mean 'quantity', sum 'sales'.\n"
-        "        *   \"For each category, find the profit margin if profit is sales minus cost, and express it as a percentage of sales.\" -> Group by 'category', sum 'sales', sum 'cost'. Then, add calculated fields: one for 'profit' (sales_sum - cost_sum) and another for 'profit_margin' (profit / sales_sum * 100).\n\n"
-        "**General Strategy & Workflow:**\n\n"
-        "1.  **Understand the Data:** Use `list_columns()` and `get_schema()` first if you're unsure about the available data fields and their types.\n"
-        "2.  **Plan Aggregation:** If the user asks for summarized data, identify:\n"
-        "    *   What groups are needed (`group_by_columns`).\n"
-        "    *   What calculations to perform on which columns (`aggregations`).\n"
-        "    *   Any derived metrics needed after grouping (`calculated_fields`).\n"
-        "3.  **Construct `AggregationRequest`:** Carefully build the JSON request for `aggregate_data`.\n"
-        "4.  **Execute and Present:** Call the `aggregate_data` tool and present the results clearly to the user.\n"
-        "5.  **Handle Errors:** If a tool returns an error, explain it to the user and try to adjust the request if possible.\n\n"
-        "**Example of a full `AggregationRequest` for `aggregate_data`:**\n"
+        "        *   \"What is the total sales per region in the 'sales_2023' dataset?\" -> Use `aggregate_data` with `dataframe_name='sales_2023'`, group by 'region', sum 'sales'.\n"
+        "        *   \"For the 'procurement_data' dataset, calculate average quantity and total sales for each product category.\" -> Use `aggregate_data` with `dataframe_name='procurement_data'`, group by 'category', mean 'quantity', sum 'sales'.\n\n"
+        "**General Strategy & Workflow (Recap):**\n\n"
+        "1.  **Identify Data Source:** Use `list_available_dataframes()` if unsure. Pick one `dataframe_name`.\n"
+        "2.  **Inspect Columns/Schema:** Use `list_columns()` and `get_schema()` with the chosen `dataframe_name`.\n"
+        "3.  **Plan Aggregation:** If summarizing, identify `group_by_columns`, `aggregations`, and `calculated_fields` for the data within the chosen `dataframe_name`.\n"
+        "4.  **Construct `AggregationRequest`:** Carefully build the JSON request for `aggregate_data`.\n"
+        "5.  **Execute and Present:** Call the appropriate tool (e.g., `aggregate_data`), always providing the `dataframe_name` and other required parameters.\n"
+        "6.  **Handle Errors:** If a tool returns an error, explain it to the user and try to adjust the request if possible (e.g., verify `dataframe_name`, column names).\n\n"
+        "**Example of `aggregate_data` call:**\n"
+        "Tool name: `aggregate_data`\n"
+        "Parameters:\n"
         "```json\n"
         "{\n"
-        '  "group_by_columns": ["category", "region"],\n'
-        '  "aggregations": [\n'
-        "    {\n"
-        '      "column": "sales",\n'
-        '      "functions": ["sum", "mean"],\n'
-        '      "rename": {"sum": "total_sales", "mean": "average_sales"}\n'
-        "    },\n"
-        "    {\n"
-        '      "column": "quantity",\n'
-        '      "functions": ["sum"],\n'
-        '      "rename": {"sum": "total_quantity"}\n'
-        "    }\n"
-        "  ],\n"
-        '  "calculated_fields": [\n'
-        "    {\n"
-        '      "calculation_type": "two_column_arithmetic",\n'
-        '      "output_column_name": "revenue_per_unit",\n'
-        '      "column_a": "total_sales",\n'
-        '      "column_b": "total_quantity",\n'
-        '      "operation": "divide",\n'
-        '      "on_division_by_zero": "null"\n'
-        "    }\n"
-        "  ]\n"
+        '  "dataframe_name": "my_specific_dataset",\n'
+        '  "request": {\n'
+        '    "group_by_columns": ["category", "region"],\n'
+        '    "aggregations": [\n'
+        "      {\n"
+        '        "column": "sales",\n'
+        '        "functions": ["sum", "mean"],\n'
+        '        "rename": {"sum": "total_sales", "mean": "average_sales"}\n'
+        "      }\n"
+        "    ]\n"
+        "  }\n"
         "}\n"
         "```\n\n"
-        "Now, analyze the user's request and determine the best tool(s) and parameters to use."
+        "Now, analyze the user's request, determine the target `dataframe_name`, and then the best tool(s) and parameters to use."
     )

@@ -1,3 +1,4 @@
+# src/upphandlat_mcp/tools/info_tools.py
 import logging
 from typing import Any
 
@@ -13,120 +14,156 @@ from upphandlat_mcp.utils.dataframe_ops import (
 logger = logging.getLogger(__name__)
 
 
-async def list_columns(ctx: Context) -> list[str] | dict[str, str]:
+async def list_available_dataframes(ctx: Context) -> list[str] | dict[str, str]:
     """
-    Retrieves the list of column names from the loaded CSV data.
+    Retrieves the list of names for all loaded DataFrames (data sources).
 
-    This tool is useful for understanding the available fields in the dataset
-    before performing aggregations or other operations.
+    Use this tool to find out which data sources are available for querying.
+    Each name can then be used as the 'dataframe_name' parameter in other tools.
 
     Args:
-        ctx: The MCP context, automatically injected.
-             Provides access to lifespan resources like the loaded DataFrame.
+        ctx: The MCP context.
 
     Returns:
-        A list of strings, where each string is a column name.
-        Returns an error dictionary if the DataFrame is not available.
+        A list of strings, where each string is an available DataFrame name.
+        Returns an error dictionary if the DataFrames are not available.
     """
     try:
-        lifespan_ctx = ctx.request_context.lifespan_context
-        df: pl.DataFrame = lifespan_ctx["df"]
-        return get_column_names_from_df(df)
+        lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
+        return list(lifespan_ctx["dataframes"].keys())
     except KeyError:
         await ctx.error(
-            "DataFrame 'df' not found in lifespan context. Was data loading successful?"
+            "DataFrame dictionary 'dataframes' not found in lifespan context. Was data loading successful?"
         )
         return {
-            "error": "DataFrame not available. Server may be misconfigured or data failed to load."
+            "error": "DataFrames not available. Server may be misconfigured or data failed to load."
         }
     except Exception as e:
         await ctx.error(
-            f"An unexpected error occurred in list_columns: {e}", exc_info=True
+            f"An unexpected error occurred in list_available_dataframes: {e}",
+            exc_info=True,
         )
         return {"error": f"An unexpected error occurred: {str(e)}"}
 
 
-async def get_schema(ctx: Context) -> dict[str, str] | dict[str, Any]:
+async def list_columns(ctx: Context, dataframe_name: str) -> list[str] | dict[str, str]:
     """
-    Retrieves the schema of the loaded CSV data, mapping column names
-    to their Polars data types (represented as strings).
-
-    This helps in understanding the kind of data each column holds (e.g.,
-    integer, float, string) which is important for choosing appropriate
-    aggregation functions or calculations.
+    Retrieves the list of column names from the specified DataFrame.
 
     Args:
-        ctx: The MCP context, automatically injected.
+        ctx: The MCP context.
+        dataframe_name: The name of the DataFrame to inspect (from list_available_dataframes).
 
     Returns:
-        A dictionary where keys are column names (str) and values are
-        their data types (str, e.g., "Int64", "Utf8", "Float64").
-        Returns an error dictionary if the DataFrame is not available.
+        A list of column name strings.
+        Returns an error dictionary if the DataFrame is not available or name is invalid.
     """
     try:
         lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
-        df: pl.DataFrame = lifespan_ctx["df"]
+        df_dict = lifespan_ctx["dataframes"]
+        if dataframe_name not in df_dict:
+            await ctx.error(
+                f"DataFrame '{dataframe_name}' not found. Available: {list(df_dict.keys())}"
+            )
+            return {
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_available_dataframes() to see options."
+            }
+        df: pl.DataFrame = df_dict[dataframe_name]
+        return get_column_names_from_df(df)
+    except KeyError:
+        await ctx.error(
+            "DataFrame dictionary 'dataframes' not found in lifespan context."
+        )
+        return {"error": "DataFrames not available. Server may be misconfigured."}
+    except Exception as e:
+        await ctx.error(
+            f"An unexpected error occurred in list_columns for '{dataframe_name}': {e}",
+            exc_info=True,
+        )
+        return {"error": f"An unexpected error occurred: {str(e)}"}
+
+
+async def get_schema(
+    ctx: Context, dataframe_name: str
+) -> dict[str, str] | dict[str, Any]:
+    """
+    Retrieves the schema of the specified DataFrame.
+
+    Args:
+        ctx: The MCP context.
+        dataframe_name: The name of the DataFrame to inspect.
+
+    Returns:
+        A dictionary mapping column names to their Polars data types.
+    """
+    try:
+        lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
+        df_dict = lifespan_ctx["dataframes"]
+        if dataframe_name not in df_dict:
+            await ctx.error(
+                f"DataFrame '{dataframe_name}' not found. Available: {list(df_dict.keys())}"
+            )
+            return {
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_available_dataframes() to see options."
+            }
+        df: pl.DataFrame = df_dict[dataframe_name]
         return get_schema_from_df(df)
     except KeyError:
         await ctx.error(
-            "DataFrame 'df' not found in lifespan context. Was data loading successful?"
+            "DataFrame dictionary 'dataframes' not found in lifespan context."
         )
-        return {
-            "error": "DataFrame not available. Server may be misconfigured or data failed to load."
-        }
+        return {"error": "DataFrames not available. Server may be misconfigured."}
     except Exception as e:
         await ctx.error(
-            f"An unexpected error occurred in get_schema: {e}", exc_info=True
+            f"An unexpected error occurred in get_schema for '{dataframe_name}': {e}",
+            exc_info=True,
         )
         return {"error": f"An unexpected error occurred: {str(e)}"}
 
 
 async def get_distinct_column_values(
     ctx: Context,
+    dataframe_name: str,
     column_name: str,
     sort_by_column: str | None = None,
     sort_descending: bool = False,
     limit: int | None = None,
 ) -> list[Any] | dict[str, str]:
     """
-    Retrieves all distinct values from a specified column.
-
-    Optionally, the distinct values can be sorted based on the values in
-    another column (affecting the order of distinct values from `column_name`),
-    and the number of results can be limited. If `sort_by_column` is not
-    provided, the distinct values of `column_name` are sorted by `column_name` itself.
+    Retrieves all distinct values from a specified column in a given DataFrame.
 
     Args:
-        ctx: The MCP context, automatically injected.
+        ctx: The MCP context.
+        dataframe_name: The name of the DataFrame to query.
         column_name: The name of the column to get distinct values from.
-        sort_by_column: Optional. The name of the column to sort by.
-                        This sort influences the order of the first occurrences
-                        of unique values in `column_name`. If None, distinct values
-                        from `column_name` are sorted by `column_name` itself.
-        sort_descending: Optional. If True, sorts in descending order.
-                         Defaults to False (ascending).
-        limit: Optional. The maximum number of distinct values to return.
-               Must be a non-negative integer if provided.
+        sort_by_column: Optional. Column to sort by for ordering distinct values.
+        sort_descending: Optional. Sort in descending order.
+        limit: Optional. Maximum number of distinct values.
 
     Returns:
-        A list of distinct values from the specified column, ordered as requested,
-        or an error dictionary if an issue occurs.
+        A list of distinct values or an error dictionary.
     """
     try:
         lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
-        df: pl.DataFrame = lifespan_ctx["df"]
+        df_dict = lifespan_ctx["dataframes"]
+        if dataframe_name not in df_dict:
+            await ctx.error(
+                f"DataFrame '{dataframe_name}' not found. Available: {list(df_dict.keys())}"
+            )
+            return {
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_available_dataframes() to see options."
+            }
+        df: pl.DataFrame = df_dict[dataframe_name]
     except KeyError:
         await ctx.error(
-            "DataFrame 'df' not found in lifespan context. Was data loading successful?"
+            "DataFrame dictionary 'dataframes' not found in lifespan context."
         )
-        return {
-            "error": "DataFrame not available. Server may be misconfigured or data failed to load."
-        }
+        return {"error": "DataFrames not available. Server may be misconfigured."}
 
     try:
         if column_name not in df.columns:
             raise ColumnNotFoundError(
-                f"Column '{column_name}' not found in DataFrame. Available columns: {df.columns}"
+                f"Column '{column_name}' not found in DataFrame '{dataframe_name}'. Available columns: {df.columns}"
             )
 
         result_series: pl.Series
@@ -134,7 +171,7 @@ async def get_distinct_column_values(
         if sort_by_column:
             if sort_by_column not in df.columns:
                 raise ColumnNotFoundError(
-                    f"Sort column '{sort_by_column}' not found in DataFrame. Available columns: {df.columns}"
+                    f"Sort column '{sort_by_column}' not found in DataFrame '{dataframe_name}'. Available columns: {df.columns}"
                 )
             result_series = df.sort(sort_by_column, descending=sort_descending)[
                 column_name
@@ -163,12 +200,13 @@ async def get_distinct_column_values(
         return {"error": f"Invalid input: {error_msg}"}
     except pl.PolarsError as pe:
         await ctx.error(
-            f"Polars error during distinct value retrieval: {pe}", exc_info=True
+            f"Polars error during distinct value retrieval for '{dataframe_name}': {pe}",
+            exc_info=True,
         )
         return {"error": f"Data processing error with Polars: {str(pe)}"}
     except Exception as e:
         await ctx.error(
-            f"An unexpected error occurred in get_distinct_column_values: {e}",
+            f"An unexpected error occurred in get_distinct_column_values for '{dataframe_name}': {e}",
             exc_info=True,
         )
         return {"error": f"An unexpected error occurred: {str(e)}"}
