@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 import polars as pl
+from rapidfuzz import fuzz, process # For fuzzy matching
 from mcp.server.fastmcp import Context
 from polars.exceptions import ColumnNotFoundError
 from upphandlat_mcp.core.config import CsvSourcesConfig
@@ -123,6 +124,111 @@ async def list_columns(ctx: Context, dataframe_name: str) -> list[str] | dict[st
             exc_info=True,
         )
         return {"error": f"An unexpected error occurred: {str(e)}"}
+
+
+async def fuzzy_search_column_values(
+    ctx: Context,
+    dataframe_name: str,
+    column_name: str,
+    search_term: str,
+    limit: int = 5,
+    score_cutoff: float = 70.0,  # Score out of 100
+) -> list[dict[str, Any]] | dict[str, str]:
+    """
+    Performs a fuzzy search for a term in a specified column of a DataFrame.
+
+    Args:
+        ctx: The MCP context.
+        dataframe_name: The name of the DataFrame to query.
+        column_name: The name of the column to search within.
+        search_term: The term to search for.
+        limit: Optional. Maximum number of distinct values to return (default 5).
+        score_cutoff: Optional. Minimum similarity score (0-100) for a match (default 70.0).
+
+    Returns:
+        A list of dictionaries, each with "value" and "score",
+        or an error dictionary.
+    """
+    if not search_term or search_term.isspace():
+        return {"error": "Search term cannot be empty or whitespace."}
+    if limit <= 0:
+        return {"error": "Limit must be a positive integer."}
+    if not (0 <= score_cutoff <= 100):
+        return {"error": "Score cutoff must be between 0 and 100."}
+
+    try:
+        lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
+        df_dict = lifespan_ctx["dataframes"]
+        if dataframe_name not in df_dict:
+            await ctx.error(
+                f"DataFrame '{dataframe_name}' not found. Available: {list(df_dict.keys())}"
+            )
+            return {
+                "error": f"DataFrame '{dataframe_name}' not found. Use list_available_dataframes() to see options."
+            }
+        df: pl.DataFrame = df_dict[dataframe_name]
+    except KeyError:
+        await ctx.error(
+            "DataFrame dictionary 'dataframes' not found in lifespan context."
+        )
+        return {"error": "DataFrames not available. Server may be misconfigured."}
+
+    try:
+        if column_name not in df.columns:
+            raise ColumnNotFoundError(
+                f"Column '{column_name}' not found in DataFrame '{dataframe_name}'. Available columns: {df.columns}"
+            )
+
+        unique_values_series: pl.Series
+        if df[column_name].dtype != pl.Utf8 and df[column_name].dtype != pl.Categorical:
+            await ctx.warning(
+                f"Column '{column_name}' in DataFrame '{dataframe_name}' is not of type Utf8 or Categorical. "
+                f"Fuzzy search works best on text. Current type: {df[column_name].dtype}. Attempting to cast to Utf8."
+            )
+            try:
+                unique_values_series = df[column_name].unique().cast(pl.Utf8)
+            except pl.PolarsError as cast_error:
+                await ctx.error(f"Failed to cast column '{column_name}' to Utf8 for fuzzy search: {cast_error}")
+                return {"error": f"Column '{column_name}' could not be cast to a string type for fuzzy search."}
+        else:
+            unique_values_series = df[column_name].unique()
+        
+        unique_values_series = unique_values_series.drop_nulls()
+        choices = unique_values_series.to_list()
+
+        if not choices:
+            return [] 
+
+        matches = process.extract(
+            search_term,
+            choices,
+            scorer=fuzz.WRatio, # A good general-purpose scorer
+            limit=limit,
+            score_cutoff=score_cutoff,
+        )
+        
+        results = [{"value": match[0], "score": round(match[1], 2)} for match in matches]
+        return results
+
+    except ColumnNotFoundError as e:
+        # Log the error for server-side visibility, then return a user-friendly message
+        logger.warning(f"ColumnNotFoundError in fuzzy_search_column_values: {e}")
+        await ctx.error(f"Configuration error: {str(e)}") # Send to client if appropriate
+        return {"error": f"Configuration error: {str(e)}"}
+    except ValueError as ve: 
+        logger.warning(f"ValueError in fuzzy_search_column_values: {ve}")
+        await ctx.error(f"Invalid input: {str(ve)}")
+        return {"error": f"Invalid input: {str(ve)}"}
+    except Exception as e:
+        logger.error(
+            f"An unexpected error occurred in fuzzy_search_column_values for '{dataframe_name}' and column '{column_name}': {e}",
+            exc_info=True,
+        )
+        await ctx.error(
+             f"An unexpected server error occurred while searching in '{dataframe_name}', column '{column_name}'.",
+             exc_info=True # exc_info might be too verbose for client, consider if needed
+        )
+        return {"error": f"An unexpected server error occurred."}
 
 
 async def get_schema(

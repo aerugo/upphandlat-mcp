@@ -8,6 +8,7 @@ from upphandlat_mcp.tools.info_tools import (
     get_distinct_column_values,
     get_schema,
     list_available_dataframes,
+    fuzzy_search_column_values,  # ADDED
     list_columns,
 )
 
@@ -23,6 +24,7 @@ mcp.tool()(list_available_dataframes)
 mcp.tool()(list_columns)
 mcp.tool()(get_schema)
 mcp.tool()(get_distinct_column_values)
+mcp.tool()(fuzzy_search_column_values) # ADDED
 mcp.tool()(aggregate_data)
 
 mcp.prompt(name="csv_aggregator_guidance")(csv_aggregator_entry_point)
