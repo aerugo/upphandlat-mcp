@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 import polars as pl
-from rapidfuzz import fuzz, process # For fuzzy matching
+from rapidfuzz import fuzz, process, utils # Added utils for explicit processor
 from mcp.server.fastmcp import Context
 from polars.exceptions import ColumnNotFoundError
 from upphandlat_mcp.core.config import CsvSourcesConfig
@@ -136,6 +136,7 @@ async def fuzzy_search_column_values(
 ) -> list[dict[str, Any]] | dict[str, str]:
     """
     Performs a fuzzy search for a term in a specified column of a DataFrame.
+    The search is case-insensitive and handles variations in wording.
 
     Args:
         ctx: The MCP context.
@@ -199,13 +200,18 @@ async def fuzzy_search_column_values(
         if not choices:
             return [] 
 
-        matches = process.extract(
-            search_term,
-            choices,
-            scorer=fuzz.WRatio, # A good general-purpose scorer
-            limit=limit,
-            score_cutoff=score_cutoff,
-        )
+            # process.extract uses utils.default_process by default if processor is not specified.
+            # utils.default_process lowercases strings, removes non-alphanumeric characters,
+            # and trims whitespace. This ensures case-insensitive matching.
+            # We specify it explicitly here for clarity.
+            matches = process.extract(
+                search_term,
+                choices,
+                scorer=fuzz.WRatio, # A good general-purpose scorer
+                processor=utils.default_process, # Explicitly use the default processor for case-insensitivity
+                limit=limit,
+                score_cutoff=score_cutoff,
+            )
         
         results = [{"value": match[0], "score": round(match[1], 2)} for match in matches]
         return results
