@@ -16,3 +16,6 @@ wheels/
 
 # Zed
 .zed
+
+# Data
+*.csv
