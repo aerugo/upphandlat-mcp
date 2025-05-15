@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -9,100 +10,65 @@ from upphandlat_mcp.models.mcp_models import (
     AggregationRequest,
     ArithmeticOperationType,
     CalculatedFieldType,
-    ConstantArithmeticConfig,
-    PercentageOfColumnConfig,
-    TwoColumnArithmeticConfig,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _build_polars_aggregation_expressions(
+async def _build_polars_aggregation_expressions(
     aggregations: list[Aggregation],
     group_by_column_names: set[str],
     existing_df_columns: set[str],
-    ctx: Context,  # For logging
+    ctx: Context,
 ) -> tuple[list[pl.Expr], set[str]]:
-    """
-    Creates a list of Polars aggregation expressions from the request.
-    Also tracks output column names to prevent duplicates and checks existence.
-
-    Returns:
-        A tuple containing the list of Polars expressions and a set of
-        all output column names created by these aggregations (including renames).
-    """
     polars_expressions: list[pl.Expr] = []
-    # Starts with group_by columns, as they will be in the output of group_by().agg()
     all_output_column_names: set[str] = set(group_by_column_names)
 
     for agg_config in aggregations:
         if agg_config.column not in existing_df_columns:
-            # This error should ideally be caught by Pydantic if we had full schema access there,
-            # or handled before this function.
             raise ValueError(
                 f"Aggregation column '{agg_config.column}' not found in DataFrame."
             )
-
         for func_enum in agg_config.functions:
-            function_name_str = func_enum.value  # e.g., "sum"
-
-            # Determine the output alias for this specific aggregation
-            # Default: {column_name}_{function_name}, e.g., "sales_sum"
-            # Custom if provided in rename: e.g., "total_sales"
+            function_name_str = func_enum.value
             output_alias = agg_config.rename.get(
                 function_name_str, f"{agg_config.column}_{function_name_str}"
             )
-
             if output_alias in all_output_column_names:
-                # This should be caught by Pydantic model validation in AggregationRequest
-                # but good to have a safeguard.
                 raise ValueError(f"Duplicate output column name: '{output_alias}'.")
             all_output_column_names.add(output_alias)
-
-            # Create Polars expression: pl.col("sales").sum().alias("total_sales")
             try:
-                # Ensure the column exists and is of a type that supports the aggregation
-                # Polars will raise an error if the operation is invalid for the dtype.
                 column_expression = pl.col(agg_config.column)
-                aggregation_function = getattr(
-                    column_expression, function_name_str
-                )  # e.g., pl.col("sales").sum
+                if function_name_str == "n_unique":
+                    aggregation_function = getattr(column_expression, "n_unique")
+                else:
+                    aggregation_function = getattr(column_expression, function_name_str)
+
                 final_expression = aggregation_function().alias(output_alias)
                 polars_expressions.append(final_expression)
             except AttributeError:
-                # Should not happen if AggFunc enum is correct
                 raise ValueError(
                     f"Invalid aggregation function '{function_name_str}' for Polars."
                 )
-            except (
-                Exception
-            ) as e:  # Catch Polars-specific errors during expression building
-                w = ctx.warning(
+            except Exception as e:
+                await ctx.warning(
                     f"Could not build expression for {agg_config.column}.{function_name_str}(): {e}"
                 )
-                # Decide: skip this expression or raise? Raising might be better.
                 raise ValueError(
                     f"Error building expression for {agg_config.column}.{function_name_str}(): {e}"
                 )
-
     return polars_expressions, all_output_column_names
 
 
 def _apply_calculated_fields(
     df: pl.DataFrame,
     calculated_field_configs: list[CalculatedFieldType],
-    # all_current_column_names is used to check input cols and prevent output conflicts
     all_current_column_names: set[str],
-    ctx: Context,  # For logging
+    ctx: Context,
 ) -> pl.DataFrame:
-    """
-    Applies a list of calculated field configurations to the DataFrame.
-    Calculated fields are applied sequentially.
-    """
     if not calculated_field_configs:
         return df
 
-    # Make a mutable copy for tracking columns available at each step
     available_columns_during_calculation = set(all_current_column_names)
     result_df = df
 
@@ -110,12 +76,10 @@ def _apply_calculated_fields(
         output_col_name = field_config.output_column_name
 
         if output_col_name in available_columns_during_calculation:
-            # This should be caught by Pydantic validation in AggregationRequest
             raise ValueError(
                 f"Calculated field output name '{output_col_name}' conflicts with an existing or previously calculated column."
             )
 
-        # Helper to check if input columns for the calculation exist
         def _check_input_columns_exist(*cols_to_check: str) -> None:
             for col_name in cols_to_check:
                 if col_name not in available_columns_during_calculation:
@@ -127,34 +91,35 @@ def _apply_calculated_fields(
         polars_expr: pl.Expr
 
         if field_config.calculation_type == "two_column_arithmetic":
-            _check_input_columns_exist(field_config.column_a, field_config.column_b)
-            col_a_expr = pl.col(field_config.column_a)
-            col_b_expr = pl.col(field_config.column_b)
+            cfg = field_config
+            _check_input_columns_exist(cfg.column_a, cfg.column_b)
+            col_a_expr = pl.col(cfg.column_a)
+            col_b_expr = pl.col(cfg.column_b)
             op_map = {
                 ArithmeticOperationType.ADD: lambda a, b: a + b,
                 ArithmeticOperationType.SUBTRACT: lambda a, b: a - b,
                 ArithmeticOperationType.MULTIPLY: lambda a, b: a * b,
                 ArithmeticOperationType.DIVIDE: lambda a, b: a / b,
             }
-            polars_expr = op_map[field_config.operation](col_a_expr, col_b_expr)
+            polars_expr = op_map[cfg.operation](col_a_expr, col_b_expr)
 
             if (
-                field_config.operation == ArithmeticOperationType.DIVIDE
-                and field_config.on_division_by_zero != "propagate_error"
+                cfg.operation == ArithmeticOperationType.DIVIDE
+                and cfg.on_division_by_zero != "propagate_error"
             ):
                 otherwise_val = (
                     None
-                    if field_config.on_division_by_zero == "null"
-                    else pl.lit(field_config.on_division_by_zero)
+                    if cfg.on_division_by_zero == "null"
+                    else pl.lit(cfg.on_division_by_zero)
                 )
                 polars_expr = (
                     pl.when(col_b_expr != 0).then(polars_expr).otherwise(otherwise_val)
                 )
-
         elif field_config.calculation_type == "constant_arithmetic":
-            _check_input_columns_exist(field_config.input_column)
-            input_col_expr = pl.col(field_config.input_column)
-            constant_expr = pl.lit(field_config.constant_value)
+            cfg = field_config
+            _check_input_columns_exist(cfg.input_column)
+            input_col_expr = pl.col(cfg.input_column)
+            constant_expr = pl.lit(cfg.constant_value)
 
             op_map_col_first = {
                 ArithmeticOperationType.ADD: lambda col, const: col + const,
@@ -169,59 +134,55 @@ def _apply_calculated_fields(
                 ArithmeticOperationType.DIVIDE: lambda const, col: const / col,
             }
 
-            if field_config.column_is_first_operand:
-                polars_expr = op_map_col_first[field_config.operation](
+            if cfg.column_is_first_operand:
+                polars_expr = op_map_col_first[cfg.operation](
                     input_col_expr, constant_expr
                 )
                 if (
-                    field_config.operation == ArithmeticOperationType.DIVIDE
-                    and field_config.on_division_by_zero != "propagate_error"
-                    and field_config.constant_value == 0
-                ):  # Dividing by constant 0
+                    cfg.operation == ArithmeticOperationType.DIVIDE
+                    and cfg.on_division_by_zero != "propagate_error"
+                    and cfg.constant_value == 0
+                ):
                     otherwise_val = (
                         None
-                        if field_config.on_division_by_zero == "null"
-                        else pl.lit(field_config.on_division_by_zero)
+                        if cfg.on_division_by_zero == "null"
+                        else pl.lit(cfg.on_division_by_zero)
                     )
                     polars_expr = (
                         pl.when(constant_expr != 0)
                         .then(polars_expr)
                         .otherwise(otherwise_val)
-                    )  # Should always be constant_expr != 0 check
-            else:  # constant is first operand
-                polars_expr = op_map_const_first[field_config.operation](
+                    )
+            else:
+                polars_expr = op_map_const_first[cfg.operation](
                     constant_expr, input_col_expr
                 )
                 if (
-                    field_config.operation == ArithmeticOperationType.DIVIDE
-                    and field_config.on_division_by_zero != "propagate_error"
-                ):  # Dividing by input_column
+                    cfg.operation == ArithmeticOperationType.DIVIDE
+                    and cfg.on_division_by_zero != "propagate_error"
+                ):
                     otherwise_val = (
                         None
-                        if field_config.on_division_by_zero == "null"
-                        else pl.lit(field_config.on_division_by_zero)
+                        if cfg.on_division_by_zero == "null"
+                        else pl.lit(cfg.on_division_by_zero)
                     )
                     polars_expr = (
                         pl.when(input_col_expr != 0)
                         .then(polars_expr)
                         .otherwise(otherwise_val)
                     )
-
         elif field_config.calculation_type == "percentage_of_column":
-            _check_input_columns_exist(
-                field_config.value_column, field_config.total_reference_column
-            )
-            value_col_expr = pl.col(field_config.value_column)
-            total_ref_col_expr = pl.col(field_config.total_reference_column)
-            polars_expr = (
-                value_col_expr / total_ref_col_expr
-            ) * field_config.scale_factor
+            cfg = field_config
+            _check_input_columns_exist(cfg.value_column, cfg.total_reference_column)
+            value_col_expr = pl.col(cfg.value_column)
+            total_ref_col_expr = pl.col(cfg.total_reference_column)
+            polars_expr = (value_col_expr / total_ref_col_expr) * cfg.scale_factor
 
-            if field_config.on_division_by_zero != "propagate_error":
+            if cfg.on_division_by_zero != "propagate_error":
                 otherwise_val = (
                     None
-                    if field_config.on_division_by_zero == "null"
-                    else pl.lit(field_config.on_division_by_zero)
+                    if cfg.on_division_by_zero == "null"
+                    else pl.lit(cfg.on_division_by_zero)
                 )
                 polars_expr = (
                     pl.when(total_ref_col_expr != 0)
@@ -229,15 +190,12 @@ def _apply_calculated_fields(
                     .otherwise(otherwise_val)
                 )
         else:
-            # Should not be reached if Pydantic validation is correct
             raise ValueError(
                 f"Unsupported calculated_field type: {getattr(field_config, 'calculation_type', 'Unknown')}"
             )
 
         result_df = result_df.with_columns(polars_expr.alias(output_col_name))
-        available_columns_during_calculation.add(
-            output_col_name
-        )  # Add new column for subsequent calculations
+        available_columns_during_calculation.add(output_col_name)
 
     return result_df
 
@@ -245,34 +203,14 @@ def _apply_calculated_fields(
 async def aggregate_data(
     request: AggregationRequest, ctx: Context
 ) -> list[dict[str, Any]] | dict[str, Any]:
-    """
-    Performs aggregation and computes derived fields on the loaded CSV data.
-
-    The tool takes a detailed `AggregationRequest` object specifying:
-    - `group_by_columns`: Columns to group the data by.
-    - `aggregations`: A list of aggregation operations (e.g., sum, mean) to
-      apply to specified columns, with optional renaming of output columns.
-    - `calculated_fields` (optional): A list of new fields to compute based on
-      the results of the aggregation, such as arithmetic operations between
-      columns or calculating percentages.
-
-    Args:
-        request: An `AggregationRequest` Pydantic model instance detailing
-                 the operations to perform.
-        ctx: The MCP context, automatically injected.
-
-    Returns:
-        A list of dictionaries, where each dictionary represents a row in the
-        aggregated and calculated result set.
-        Returns an error dictionary if issues occur (e.g., DataFrame not loaded,
-        invalid column names, calculation errors).
-    """
     await ctx.info(
-        f"Received aggregation request: Group by {request.group_by_columns}, {len(request.aggregations)} aggregations."
+        f"Received aggregation request: Group by {request.group_by_columns}, "
+        f"Aggregations: {'Present and non-empty' if request.aggregations and len(request.aggregations) > 0 else 'None/Empty'}, "
+        f"Calculated Fields: {'Present' if request.calculated_fields else 'None/Empty'}."
     )
 
     try:
-        lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context  # type: ignore
+        lifespan_ctx: LifespanContext = ctx.request_context.lifespan_context
         source_df: pl.DataFrame = lifespan_ctx["df"]
     except KeyError:
         await ctx.error("DataFrame 'df' not found in lifespan context.")
@@ -282,67 +220,122 @@ async def aggregate_data(
 
     df_column_names = set(source_df.columns)
 
-    # Validate group_by_columns
     for col in request.group_by_columns:
         if col not in df_column_names:
             await ctx.error(
-                f"Invalid group_by_column: '{col}' not found in DataFrame columns: {df_column_names}"
+                f"Invalid group_by_column: '{col}' not found. Available: {list(df_column_names)}"
             )
             return {"error": f"Invalid group_by_column: '{col}' not found."}
 
-    # Validate aggregation input columns
-    for agg_config in request.aggregations:
-        if agg_config.column not in df_column_names:
-            await ctx.error(
-                f"Invalid aggregation source column: '{agg_config.column}' not found in DataFrame columns: {df_column_names}"
-            )
-            return {
-                "error": f"Invalid aggregation source column: '{agg_config.column}' not found."
-            }
-
+    if request.aggregations:
+        for agg_config in request.aggregations:
+            if agg_config.column not in df_column_names:
+                await ctx.error(
+                    f"Invalid aggregation source column: '{agg_config.column}' not found. Available: {list(df_column_names)}"
+                )
+                return {
+                    "error": f"Invalid aggregation source column: '{agg_config.column}' not found."
+                }
     try:
-        # Build aggregation expressions
-        # Pydantic validation in AggregationRequest should handle output name conflicts among aggregations
-        # and between aggregations and group_by_columns.
-        polars_agg_expressions, aggregated_column_names = (
-            _build_polars_aggregation_expressions(
+        intermediate_df: pl.DataFrame
+        columns_after_aggregation_or_grouping: set[str]
+
+        if request.aggregations and len(request.aggregations) > 0:
+            (
+                polars_agg_expressions,
+                aggregated_column_names,
+            ) = await _build_polars_aggregation_expressions(
                 request.aggregations,
                 set(request.group_by_columns),
                 df_column_names,
                 ctx,
             )
-        )
-
-        # Perform the Polars group_by and aggregation
-        grouped_df = source_df.group_by(request.group_by_columns)
-        aggregated_df = grouped_df.agg(polars_agg_expressions)
-
-        # Apply calculated fields if any
-        # Pydantic validation in AggregationRequest should handle output name conflicts
-        # for calculated fields with previous columns.
-        if request.calculated_fields:
-            final_df = _apply_calculated_fields(
-                aggregated_df,
-                request.calculated_fields,
-                aggregated_column_names,  # These are the columns available post-aggregation
-                ctx,
+            grouped_df = source_df.group_by(
+                request.group_by_columns, maintain_order=True
+            )
+            intermediate_df = grouped_df.agg(polars_agg_expressions)
+            columns_after_aggregation_or_grouping = aggregated_column_names
+            await ctx.info(
+                f"Performed aggregation. Resulting columns: {intermediate_df.columns}"
             )
         else:
-            final_df = aggregated_df
+            intermediate_df = source_df
+            columns_after_aggregation_or_grouping = set(df_column_names)
+            await ctx.info(
+                "No aggregations requested. Proceeding with original columns for calculated fields."
+            )
 
-        # Sort results by group_by columns for consistent output
-        if request.group_by_columns:
-            final_df = final_df.sort(request.group_by_columns)
+        if request.calculated_fields:
+            final_df = await asyncio.to_thread(
+                _apply_calculated_fields,
+                intermediate_df,
+                request.calculated_fields,
+                columns_after_aggregation_or_grouping,
+                ctx,
+            )
+            await ctx.info(
+                f"Applied calculated fields. Resulting columns: {final_df.columns}"
+            )
+        else:
+            final_df = intermediate_df
 
-        await ctx.info(f"Aggregation successful. Result shape: {final_df.shape}")
-        return final_df.to_dicts()
+        columns_to_select = list(request.group_by_columns)
 
-    except (
-        ValueError
-    ) as ve:  # Catch specific errors from our helpers or Pydantic re-validation
+        if request.aggregations and len(request.aggregations) > 0:
+            for agg_item in request.aggregations:
+                for func_item in agg_item.functions:
+                    alias = agg_item.rename.get(
+                        func_item.value, f"{agg_item.column}_{func_item.value}"
+                    )
+                    if alias not in columns_to_select:
+                        columns_to_select.append(alias)
+
+        if request.calculated_fields:
+            for cf_item in request.calculated_fields:
+                if cf_item.output_column_name not in columns_to_select:
+                    columns_to_select.append(cf_item.output_column_name)
+
+        final_columns_present = [
+            col for col in columns_to_select if col in final_df.columns
+        ]
+
+        if not final_columns_present:
+            if request.group_by_columns and all(
+                c in source_df.columns for c in request.group_by_columns
+            ):
+                await ctx.info(
+                    "No aggregations or calculated fields resulted in specified output columns other than group_by columns. "
+                    "Returning unique group_by columns from original data."
+                )
+                final_df_to_return = source_df.select(request.group_by_columns).unique()
+            else:
+                await ctx.warning(
+                    "No columns to select in the final DataFrame, or group_by columns are invalid."
+                )
+                return []
+        else:
+            final_df_to_return = final_df.select(final_columns_present)
+
+        if not (request.aggregations and len(request.aggregations) > 0):
+            if final_df_to_return.height > 0:
+                final_df_to_return = final_df_to_return.unique(
+                    subset=final_df_to_return.columns
+                )
+
+        if request.group_by_columns and all(
+            gbc in final_df_to_return.columns for gbc in request.group_by_columns
+        ):
+            final_df_to_return = final_df_to_return.sort(request.group_by_columns)
+
+        await ctx.info(
+            f"Aggregation/calculation successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
+        )
+        return final_df_to_return.to_dicts()
+
+    except ValueError as ve:
         await ctx.error(f"ValueError during aggregation processing: {ve}")
         return {"error": f"Configuration or processing error: {str(ve)}"}
-    except pl.PolarsError as pe:  # Catch Polars-specific errors
+    except pl.PolarsError as pe:
         await ctx.error(f"Polars error during aggregation: {pe}", exc_info=True)
         return {"error": f"Data processing error with Polars: {str(pe)}"}
     except Exception as e:

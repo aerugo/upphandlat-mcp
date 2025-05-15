@@ -1,3 +1,4 @@
+# src/upphandlat_mcp/models/mcp_models.py
 from enum import Enum
 from typing import Any, Literal
 
@@ -60,11 +61,6 @@ class BaseCalculatedField(BaseModel):
     @field_validator("output_column_name")
     @classmethod
     def no_reserved_output_name(cls, name: str) -> str:
-        """Ensure output column name is not a reserved keyword."""
-        # These are keys in the union type, not actual column names to avoid.
-        # It's more about avoiding clashes with existing or group_by columns.
-        # This validation is better done when applying fields, checking against existing columns.
-        # The regex pattern is the primary Pydantic validation here.
         return name
 
 
@@ -152,16 +148,19 @@ class AggregationRequest(BaseModel):
     """
 
     group_by_columns: list[str] = Field(
-        ..., min_length=1, description="List of column names to group the data by."
-    )
-    aggregations: list[Aggregation] = Field(
         ...,
-        min_length=1,
-        description="List of aggregation operations to perform on specified columns.",
+        min_length=1,  # Still require group_by_columns
+        description="List of column names to group the data by.",
+    )
+    aggregations: list[Aggregation] | None = (
+        Field(  # CHANGED: Made optional, defaults to None
+            None,
+            description="List of aggregation operations to perform. Can be empty or None if only applying calculated fields to original grouped columns.",
+        )
     )
     calculated_fields: list[CalculatedFieldType] | None = Field(
         None,
-        description="Optional list of calculated fields to derive after aggregation. These are applied in order.",
+        description="Optional list of calculated fields to derive. If aggregations are empty/None, these apply to original grouped columns, otherwise to aggregated columns.",
     )
 
     @model_validator(mode="after")
@@ -169,25 +168,39 @@ class AggregationRequest(BaseModel):
         """
         Validate that output column names from aggregations and calculated fields
         do not conflict with each other or with group_by_columns.
+        Also ensures that if aggregations is None/empty, calculated_fields refer
+        to original columns (this part is implicitly handled by _apply_calculated_fields'
+        column checking against `available_columns_during_calculation`).
         """
         all_output_names: set[str] = set(self.group_by_columns)
 
-        for agg in self.aggregations:
-            for func in agg.functions:
-                alias = agg.rename.get(func.value, f"{agg.column}_{func.value}")
-                if alias in all_output_names:
-                    raise ValueError(
-                        f"Duplicate output column name '{alias}' from aggregation conflicts with group_by or another aggregation."
-                    )
-                all_output_names.add(alias)
+        if self.aggregations:  # Only process if aggregations are provided
+            for agg in self.aggregations:
+                for func in agg.functions:
+                    alias = agg.rename.get(func.value, f"{agg.column}_{func.value}")
+                    if alias in all_output_names:
+                        raise ValueError(
+                            f"Duplicate output column name '{alias}' from aggregation conflicts with group_by or another aggregation."
+                        )
+                    all_output_names.add(alias)
+
+        # If aggregations is empty, `all_output_names` initially only contains group_by_columns.
+        # `_apply_calculated_fields` will check its input columns against what's available
+        # (which would be original columns + group_by_columns if no actual aggregation happened).
 
         if self.calculated_fields:
+            temp_available_cols = set(
+                all_output_names
+            )  # Start with group_by and aggregated columns
+            # If no aggregations, this `temp_available_cols` needs to be populated with
+            # *all original columns* in the `_apply_calculated_fields` context for validation.
+            # The model validator here can only check for conflicts among defined outputs.
+
             for calc_field_config in self.calculated_fields:
-                # The config itself is a discriminated union, so access common field directly
                 output_name = calc_field_config.output_column_name
-                if output_name in all_output_names:
+                if output_name in temp_available_cols:
                     raise ValueError(
-                        f"Calculated field output name '{output_name}' conflicts with group_by or aggregation columns."
+                        f"Calculated field output name '{output_name}' conflicts with group_by, aggregation, or prior calculated columns."
                     )
-                all_output_names.add(output_name)
+                temp_available_cols.add(output_name)
         return self
