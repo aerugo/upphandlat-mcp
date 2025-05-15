@@ -3,9 +3,9 @@ import logging
 from typing import Any
 
 import polars as pl
-from rapidfuzz import fuzz, process, utils # Added utils for explicit processor
 from mcp.server.fastmcp import Context
 from polars.exceptions import ColumnNotFoundError
+from rapidfuzz import fuzz, process, utils  # Added utils for explicit processor
 from upphandlat_mcp.core.config import CsvSourcesConfig
 from upphandlat_mcp.lifespan.context import LifespanContext
 from upphandlat_mcp.utils.dataframe_ops import (
@@ -189,16 +189,20 @@ async def fuzzy_search_column_values(
             try:
                 unique_values_series = df[column_name].unique().cast(pl.Utf8)
             except pl.PolarsError as cast_error:
-                await ctx.error(f"Failed to cast column '{column_name}' to Utf8 for fuzzy search: {cast_error}")
-                return {"error": f"Column '{column_name}' could not be cast to a string type for fuzzy search."}
+                await ctx.error(
+                    f"Failed to cast column '{column_name}' to Utf8 for fuzzy search: {cast_error}"
+                )
+                return {
+                    "error": f"Column '{column_name}' could not be cast to a string type for fuzzy search."
+                }
         else:
             unique_values_series = df[column_name].unique()
-        
+
         unique_values_series = unique_values_series.drop_nulls()
         choices = unique_values_series.to_list()
 
         if not choices:
-            return [] 
+            return []
 
         # process.extract uses utils.default_process by default if processor is not specified.
         # utils.default_process lowercases strings, removes non-alphanumeric characters,
@@ -207,21 +211,25 @@ async def fuzzy_search_column_values(
         matches = process.extract(
             search_term,
             choices,
-            scorer=fuzz.WRatio, # A good general-purpose scorer
-            processor=utils.default_process, # Explicitly use the default processor for case-insensitivity
+            scorer=fuzz.WRatio,  # A good general-purpose scorer
+            processor=utils.default_process,  # Explicitly use the default processor for case-insensitivity
             limit=limit,
             score_cutoff=score_cutoff,
         )
-        
-        results = [{"value": match[0], "score": round(match[1], 2)} for match in matches]
+
+        results = [
+            {"value": match[0], "score": round(match[1], 2)} for match in matches
+        ]
         return results
 
     except ColumnNotFoundError as e:
         # Log the error for server-side visibility, then return a user-friendly message
         logger.warning(f"ColumnNotFoundError in fuzzy_search_column_values: {e}")
-        await ctx.error(f"Configuration error: {str(e)}") # Send to client if appropriate
+        await ctx.error(
+            f"Configuration error: {str(e)}"
+        )  # Send to client if appropriate
         return {"error": f"Configuration error: {str(e)}"}
-    except ValueError as ve: 
+    except ValueError as ve:
         logger.warning(f"ValueError in fuzzy_search_column_values: {ve}")
         await ctx.error(f"Invalid input: {str(ve)}")
         return {"error": f"Invalid input: {str(ve)}"}
@@ -231,8 +239,8 @@ async def fuzzy_search_column_values(
             exc_info=True,
         )
         await ctx.error(
-             f"An unexpected server error occurred while searching in '{dataframe_name}', column '{column_name}'.",
-             exc_info=True # exc_info might be too verbose for client, consider if needed
+            f"An unexpected server error occurred while searching in '{dataframe_name}', column '{column_name}'.",
+            exc_info=True,  # exc_info might be too verbose for client, consider if needed
         )
         return {"error": f"An unexpected server error occurred."}
 
