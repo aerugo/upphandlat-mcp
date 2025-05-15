@@ -87,13 +87,6 @@ async def list_available_dataframes(
 
 async def list_columns(ctx: Context, dataframe_name: str) -> list[str] | dict[str, str]:
     """
-            exc_info=True,
-        )
-        return {"error": f"An unexpected error occurred: {str(e)}"}
-
-
-async def list_columns(ctx: Context, dataframe_name: str) -> list[str] | dict[str, str]:
-    """
     Retrieves the list of column names from the specified DataFrame.
 
     Args:
