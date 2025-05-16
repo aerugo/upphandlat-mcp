@@ -532,6 +532,7 @@ async def aggregate_data(
     """
     await ctx.info(
         f"Received aggregation request for DataFrame '{dataframe_name}': "
+        f"Filters: {'Present' if request.filters else 'None/Empty'}, " # MODIFIED LOGGING
         f"Group by {request.group_by_columns}, "
         f"Aggregations: {'Present and non-empty' if request.aggregations and len(request.aggregations) > 0 else 'None/Empty'}, "
         f"Calculated Fields: {'Present' if request.calculated_fields else 'None/Empty'}."
