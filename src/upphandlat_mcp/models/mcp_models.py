@@ -46,6 +46,82 @@ class Aggregation(BaseModel):
         return self
 
 
+# ADD NEW ENUMS AND MODELS FOR SUMMARY ROW:
+
+class SummaryFunction(str, Enum):
+    """Defines the function to apply for summarizing a column in the summary row."""
+
+    SUM = "sum"
+    MEAN = "mean"
+    COUNT = "count"  # Count of non-null values in the column
+    MIN = "min"
+    MAX = "max"
+    LABEL = "label"  # Indicates the cell should contain a specific text label
+    NONE = "none"    # Explicitly no summary for this column (results in null/None)
+
+
+class SummaryColumnConfiguration(BaseModel):
+    """Configuration for summarizing a single column in the summary row."""
+
+    column_name: str = Field(..., description="The name of the column to configure.")
+    summary_function: SummaryFunction = Field(
+        ..., description="The function to apply for this column's summary."
+    )
+    label_text: str | None = Field(
+        None,
+        description="The text to display if summary_function is 'label'. Required if 'label', otherwise ignored.",
+    )
+
+    @model_validator(mode="after")
+    def check_label_text_for_label_function(self) -> "SummaryColumnConfiguration":
+        if self.summary_function == SummaryFunction.LABEL and self.label_text is None:
+            raise ValueError(
+                f"label_text must be provided when summary_function is 'label' for column '{self.column_name}'."
+            )
+        if self.summary_function != SummaryFunction.LABEL and self.label_text is not None:
+            # Optionally, you could clear label_text or warn if provided unnecessarily.
+            # For now, we'll just ignore it if function is not LABEL.
+            pass
+        return self
+
+
+class SummaryRowSettings(BaseModel):
+    """Settings for including an optional summary row at the end of the aggregation results."""
+
+    enabled: bool = Field(
+        False, description="Set to true to include a summary row in the output."
+    )
+    default_numeric_summary_function: SummaryFunction = Field(
+        SummaryFunction.SUM,
+        description="Default summary function for numeric columns not explicitly configured. Must be an aggregate type (sum, mean, etc.), not 'label' or 'none'.",
+    )
+    default_string_summary_function: SummaryFunction = Field(
+        SummaryFunction.NONE,
+        description="Default summary function for string or other non-numeric columns not explicitly configured. Typically 'none' or 'label'.",
+    )
+    first_group_by_column_label: str = Field(
+        "Total",
+        description="Default label for the first group_by column in the summary row (if not overridden by column_specific_summaries).",
+    )
+    column_specific_summaries: list[SummaryColumnConfiguration] | None = Field(
+        None,
+        description="List of specific configurations for individual columns, overriding defaults.",
+    )
+
+    @model_validator(mode="after")
+    def check_default_numeric_function(self) -> "SummaryRowSettings":
+        if self.default_numeric_summary_function in [
+            SummaryFunction.LABEL,
+            SummaryFunction.NONE,
+        ]:
+            raise ValueError(
+                "default_numeric_summary_function must be an aggregate type (e.g., 'sum', 'mean'), not 'label' or 'none'."
+            )
+        # A similar check could be added for default_string_summary_function if needed,
+        # e.g., to ensure it's not an arithmetic aggregation.
+        return self
+
+
 class FilterOperator(str, Enum):
     """Supported filter operations."""
 
@@ -206,7 +282,7 @@ class AggregationRequest(BaseModel):
     """
     Defines the request payload for the aggregation tool.
     It specifies how to filter data, how to group it, what aggregations to perform,
-    and any additional calculated fields to compute on the aggregated results.
+    any additional calculated fields, and optional summary row settings.
     """
 
     filters: list[FilterCondition] | None = Field(
@@ -226,6 +302,10 @@ class AggregationRequest(BaseModel):
         None,
         description="Optional list of calculated fields to derive. If aggregations are empty/None, these apply to original grouped columns, otherwise to aggregated columns.",
     )
+    summary_settings: SummaryRowSettings | None = Field( # ADDED THIS FIELD
+        None,
+        description="Optional settings for adding a summary row at the end of the results.",
+    ) # ADDED THIS FIELD
 
     @model_validator(mode="after")
     def check_column_name_conflicts(self) -> "AggregationRequest":
@@ -258,4 +338,13 @@ class AggregationRequest(BaseModel):
                         f"Calculated field output name '{output_name}' conflicts with group_by, aggregation, or prior calculated columns."
                     )
                 temp_available_cols.add(output_name)
+        
+        # Validate summary_settings column names if present
+        if self.summary_settings and self.summary_settings.column_specific_summaries:
+            # Output columns are not fully known here without deeper inspection of renames and calc fields.
+            # This validation is better done at runtime in aggregate_data when final_df columns are known.
+            # However, we can check if configured columns exist in group_by_columns at least.
+            # For now, deferring full validation of summary column names to runtime.
+            pass
+
         return self

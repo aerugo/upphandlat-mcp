@@ -12,6 +12,9 @@ from upphandlat_mcp.models.mcp_models import (
     CalculatedFieldType,
     FilterCondition,
     FilterOperator,
+    SummaryFunction,       # ADDED
+    SummaryRowSettings,    # ADDED
+    SummaryColumnConfiguration # ADDED
 )
 
 logger = logging.getLogger(__name__)
@@ -354,6 +357,7 @@ async def aggregate_data(
     2. Apply multiple aggregation functions (sum, mean, count, min, max) to different columns.
     3. Create new columns based on arithmetic operations or percentage calculations, either on
        aggregated results or on original data.
+    4. Optionally, include a summary row at the end of the results with configurable aggregations.
 
     Args:
         ctx: The MCP context (automatically provided).
@@ -374,14 +378,14 @@ async def aggregate_data(
 
     ```json
     {
-      "filters": [ // ADDED THIS SECTION
+      "filters": [
         {
           "column": "column_name_to_filter",
-          "operator": "equals", // e.g., "equals", "greater_than", "in", "contains"
-          "value": "some_value", // or [1, 2, 3] for "in"
-          "case_sensitive": false // optional for string ops
+          "operator": "equals",
+          "value": "some_value",
+          "case_sensitive": false
         }
-      ], // END ADDED SECTION
+      ],
       "group_by_columns": ["column_name1", "column_name2"],
       "aggregations": [
         {
@@ -398,144 +402,67 @@ async def aggregate_data(
           "column_b": "total_cost_agg",
           "operation": "subtract"
         }
-      ]
+      ],
+      "summary_settings": { // ADDED THIS SECTION
+        "enabled": true,
+        "first_group_by_column_label": "Grand Total",
+        "default_numeric_summary_function": "sum",
+        "column_specific_summaries": [
+          { "column_name": "some_string_column", "summary_function": "label", "label_text": "All Items" }
+        ]
+      } // END ADDED SECTION
     }
     ```
 
     **Detailed breakdown of `AggregationRequest` fields:**
 
-    0.  **`filters: list[FilterCondition] | None` (Optional)**  # ADDED NEW FIELD DOC
+    0.  **`filters: list[FilterCondition] | None` (Optional)**
         *   A list of `FilterCondition` objects, each defining a criterion to filter the source DataFrame
             *before* any grouping or aggregation takes place.
-        *   All conditions in the list are combined using AND logic (i.e., a row must satisfy all specified filters).
-        *   If omitted, `null`, or an empty list, no pre-filtering is applied.
-        *   Each `FilterCondition` object has:
-            *   `column: str` (Required): The name of the column from the source DataFrame to filter on.
-            *   `operator: FilterOperator` (Required): The comparison operator. Supported values:
-                `"equals"`, `"not_equals"`, `"greater_than"`, `"greater_than_or_equal_to"`,
-                `"less_than"`, `"less_than_or_equal_to"`, `"in"`, `"not_in"`,
-                `"contains"` (for strings), `"starts_with"` (for strings), `"ends_with"` (for strings),
-                `"is_null"`, `"is_not_null"`.
-            *   `value: Any | None` (Usually Required): The value to compare against.
-                *   For `"in"` or `"not_in"`, this must be a list of values (e.g., `["A", "B", "C"]`).
-                *   For `"is_null"` or `"is_not_null"`, this field is ignored and can be `null`.
-                *   For other operators, this is the single value for comparison.
-            *   `case_sensitive: bool` (Optional, Default: `False`): # MODIFIED
-                For string comparison operators (`"equals"`, `"not_equals"`, `"contains"`, `"starts_with"`, `"ends_with"`
-                when the column and value are strings), specifies if the comparison should be case-sensitive.
-                Defaults to `False` (case-insensitive). Set to `True` for case-sensitive matching. # MODIFIED
-                Ignored for non-string operations or other operators. # MODIFIED
+        *   All conditions in the list are combined using AND logic.
+        *   Each `FilterCondition` has: `column`, `operator`, `value`, `case_sensitive`. (See prompt for details)
 
-    1.  **`group_by_columns: list[str]` (Required)** # Renumber existing fields
-        *   A list of column names to group the data by. At least one column must be provided.
-        *   The unique combinations of values in these columns will form the groups for aggregation.
-        *   Example: `["År", "Sektor för köpare"]` would group data by year and buyer sector.
-        *   These columns will always be present in the output.
+    1.  **`group_by_columns: list[str]` (Required)**
+        *   Column names to group by. These columns will be in the output.
 
-    2.  **`aggregations: list[Aggregation] | None` (Optional)** # Renumber
-        *   A list of `Aggregation` objects, each defining how to aggregate a specific column from the
-          original `dataframe_name` over the defined groups.
-        *   If omitted, `null`, or an empty list, no new summary aggregations are computed.
-          `calculated_fields` (if any) will then operate on the original columns of the DataFrame
-          (see "Calculated Fields with No Aggregations" below).
-        *   Each `Aggregation` object has:
-            *   `column: str` (Required): The name of the column from the source DataFrame to aggregate
-              (e.g., `"Antal upphandlingar, Antal"`).
-            *   `functions: list[AggFunc]` (Required): A list of aggregation functions to apply.
-                Supported `AggFunc` values are:
-                *   `"sum"`: Calculates the sum of values in the group.
-                *   `"mean"`: Calculates the average of values in the group.
-                *   `"count"`: Counts the number of non-null values in the specified `column` within each group.
-                *   `"min"`: Finds the minimum value in the group.
-                *   `"max"`: Finds the maximum value in the group.
-            *   `rename: dict[str, str]` (Optional): A dictionary to provide custom names for the
-              output columns generated by this aggregation.
-                *   Keys must be one of the `AggFunc` values used in `functions` (e.g., `"sum"`).
-                *   Values are the desired new column names (e.g., `"Total_Antal"`).
-                *   If not provided, or a function is not renamed, output columns are named
-                  automatically as `{column}_{function}` (e.g., `"Antal upphandlingar, Antal_sum"`).
+    2.  **`aggregations: list[Aggregation] | None` (Optional)**
+        *   List of `Aggregation` objects for summarizing columns.
+        *   Each `Aggregation` has: `column`, `functions` (list of `AggFunc`), `rename` (optional dict).
+        *   Supported `AggFunc`: `"sum"`, `"mean"`, `"count"`, `"min"`, `"max"`.
 
-    3.  **`calculated_fields: list[CalculatedFieldType] | None` (Optional)** # Renumber
-        *   A list of objects, each defining a calculation to create a new column.
-        *   **Order of Operation:** Filtering is applied first. Then, calculations are performed *after* all aggregations (if any) are completed on the filtered data.
-        *   **Input Columns for Calculations:**
-            *   If `aggregations` are defined and produce results: Calculated fields can use the
-              `group_by_columns` and any newly created aggregated columns as inputs.
-            *   If `aggregations` is `null` or empty: Calculated fields operate directly on the
-              original columns of the `dataframe_name`.
-        *   Each calculated field object requires:
-            *   `output_column_name: str` (Required): The name for the new calculated column. This name
-              must be unique and not conflict with `group_by_columns` or aggregated column names.
-            *   `calculation_type: str` (Required): Specifies the type of calculation. One of:
-                `"two_column_arithmetic"`, `"constant_arithmetic"`, `"percentage_of_column"`.
+    3.  **`calculated_fields: list[CalculatedFieldType] | None` (Optional)**
+        *   List of objects to create new columns *after* aggregations.
+        *   Types: `TwoColumnArithmeticConfig`, `ConstantArithmeticConfig`, `PercentageOfColumnConfig`.
+        *   Each needs `output_column_name` and `calculation_type`. (See prompt for details on each type)
 
-        *   **Types of Calculated Fields:**
-
-            *   **`TwoColumnArithmeticConfig` (for `calculation_type: "two_column_arithmetic"`)**
-                *   Performs arithmetic between two existing columns (A op B).
-                *   `column_a: str`: Name of the first column operand.
-                *   `column_b: str`: Name of the second column operand.
-                *   `operation: ArithmeticOperationType`: The operation to perform. Supported values:
-                    `"add"`, `"subtract"`, `"multiply"`, `"divide"`.
-                *   `on_division_by_zero: float | "null" | "propagate_error"` (Default: `"propagate_error"`):
-                  Behavior for division by zero (if `operation` is `"divide"` and `column_b` is zero).
-                  Can be a specific float (e.g., `0.0`), `"null"` (inserts a null value), or
-                  `"propagate_error"` (Polars default, may result in `inf` or `NaN`).
-
-            *   **`ConstantArithmeticConfig` (for `calculation_type: "constant_arithmetic"`)**
-                *   Performs arithmetic between a column and a constant value.
-                *   `input_column: str`: Name of the column operand.
-                *   `constant_value: float`: The constant number for the operation.
-                *   `operation: ArithmeticOperationType`: Same as above (`"add"`, `"subtract"`, `"multiply"`, `"divide"`).
-                *   `column_is_first_operand: bool` (Default: `true`): If `true`, the operation is
-                  `input_column op constant_value`. If `false`, it's `constant_value op input_column`.
-                *   `on_division_by_zero: float | "null" | "propagate_error"`: Relevant if division by zero
-                  could occur (e.g., `input_column / 0` or `constant_value / 0` if `input_column` is zero).
-
-            *   **`PercentageOfColumnConfig` (for `calculation_type: "percentage_of_column"`)**
-                *   Calculates one column as a percentage of another: `(value_column / total_reference_column) * scale_factor`.
-                *   `value_column: str`: The column representing the part/numerator.
-                *   `total_reference_column: str`: The column representing the total/base/denominator.
-                *   `scale_factor: float` (Default: `100.0`): Factor to multiply the ratio by (e.g., `100.0` for percentage).
-                *   `on_division_by_zero: float | "null" | "propagate_error"`: Behavior if `total_reference_column` is zero.
+    4.  **`summary_settings: SummaryRowSettings | None` (Optional)** # ADDED NEW FIELD DOC
+        *   Settings for including a summary row at the end of the results.
+        *   If omitted or `enabled` is `false`, no summary row is added.
+        *   `enabled: bool` (Default: `false`): Set to `true` to add the summary row.
+        *   `default_numeric_summary_function: SummaryFunction` (Default: `"sum"`): How to summarize numeric columns
+            not specifically configured in `column_specific_summaries`.
+            Options: `"sum"`, `"mean"`, `"count"`, `"min"`, `"max"`.
+        *   `default_string_summary_function: SummaryFunction` (Default: `"none"`): How to summarize string or other
+            non-numeric columns not specifically configured.
+            Options: `"label"`, `"none"`, `"count"`.
+        *   `first_group_by_column_label: str` (Default: `"Total"`): Label for the first `group_by_column`
+            in the summary row (if not overridden).
+        *   `column_specific_summaries: list[SummaryColumnConfiguration] | None`: A list to override default
+            summary behavior for specific output columns.
+            *   Each `SummaryColumnConfiguration` object has:
+                *   `column_name: str` (Required): The name of an output column (from group-by, aggregation, or calculated field).
+                *   `summary_function: SummaryFunction` (Required): The function to apply.
+                    Options: `"sum"`, `"mean"`, `"count"`, `"min"`, `"max"`, `"label"`, `"none"`.
+                *   `label_text: str | None` (Required if `summary_function` is `"label"`, otherwise ignored):
+                    The text to display for this column in the summary row.
 
     **How to Use This Tool Effectively:**
+    (Refer to the main prompt for detailed steps on discovering data, planning analysis, etc.)
 
-    1.  **Discover Data:**
-        *   Use `list_available_dataframes()` to get the `dataframe_name` for the dataset you want to analyze.
-        *   Use `list_columns(dataframe_name="...")` to see all available column names.
-        *   Use `get_schema(dataframe_name="...")` to understand the data types of columns. This is crucial for
-          choosing appropriate aggregation functions and arithmetic operations.
-        *   For exploring categorical values for potential `group_by_columns`, use
-          `get_distinct_column_values(...)` or `fuzzy_search_column_values(...)`.
+    **Calculated Fields with No Aggregations:**
+    (Refer to the main prompt for details.)
 
-    2.  **Plan Your Analysis:**
-        *   **Grouping:** What are the key dimensions for your summary? (e.g., "by Year and Region", "per Product Category"). These become your `group_by_columns`.
-        *   **Aggregation:** What numerical facts do you need for each group? (e.g., "total sales", "average quantity", "number of occurrences"). This defines your `aggregations`.
-            *   Remember: `count` on a column counts non-null entries of *that column* within each group. If you want to count rows in a group, you can `count` any column that is always non-null for those rows (like a primary ID), or any column really, if you just need a row count per group.
-        *   **Derivation:** Do you need to calculate new metrics from the grouped/aggregated data or from original data? (e.g., "profit margin = revenue - cost", "percentage change"). This defines your `calculated_fields`.
-
-    3.  **Construct the `AggregationRequest` JSON:**
-        *   Be meticulous with column names; they must exactly match those in the DataFrame or those generated by preceding aggregation steps (if used as input to calculated fields).
-        *   Use `rename` in aggregations for clear, understandable output column names.
-        *   Ensure `output_column_name` for calculated fields is unique.
-        *   Verify that columns used in arithmetic or numeric aggregations are of appropriate data types (e.g., numeric, not string).
-
-    4.  **Calculated Fields with No Aggregations:**
-        *   If the `aggregations` field is omitted, `null`, or an empty list, `calculated_fields` will operate directly on the columns of the original `dataframe_name`.
-        *   The tool will then effectively apply these calculations row-wise to the original data.
-        *   The final output will include the `group_by_columns` and the newly created `calculated_fields`, showing unique combinations of these selected columns from the (potentially transformed) original data. This is useful for deriving new columns without performing summary aggregation.
-
-    **Example `AggregationRequest` (using sample data from `upphandlingsmyndigheten_antal_upphandlingar`):**
-
-    Suppose the dataset `upphandlingsmyndigheten_antal_upphandlingar` has columns like "År" (Year),
-    "Sektor för köpare" (Buyer Sector), "Upphandlings-ID" (Procurement ID), and
-    "Antal upphandlingar, Antal" (Number of Procurements - likely the value to sum up per row).
-
-    **Goal:** Calculate the total number of procurements and the count of unique procurement events (rows)
-    per year and buyer sector. Then, calculate the average number of procurements per event (assuming
-    "Antal upphandlingar, Antal" can be greater than 1 for a single event/row, or if it represents a value).
-
+    **Example `AggregationRequest` with Summary Row:**
     ```json
     {
       "dataframe_name": "upphandlingsmyndigheten_antal_upphandlingar",
@@ -548,7 +475,7 @@ async def aggregate_data(
             "rename": { "sum": "Totala_Antal_Upphandlingar_Värde" }
           },
           {
-            "column": "Upphandlings-ID", // Assuming each row is a unique procurement event
+            "column": "Upphandlings-ID",
             "functions": ["count"],
             "rename": { "count": "Antal_Upphandlingstillfällen" }
           }
@@ -562,20 +489,29 @@ async def aggregate_data(
             "operation": "divide",
             "on_division_by_zero": "null"
           }
-        ]
+        ],
+        "summary_settings": {
+          "enabled": true,
+          "first_group_by_column_label": "Alla År Totalt",
+          "default_numeric_summary_function": "sum",
+          "column_specific_summaries": [
+            { "column_name": "Sektor för köpare", "summary_function": "label", "label_text": "Alla Sektorer" },
+            { "column_name": "Genomsnittligt_Värde_Per_Tillfälle", "summary_function": "mean" }
+          ]
+        }
       }
     }
     ```
-
     This tool is designed to be flexible. If your query is complex, break it down into these
-    components (grouping, aggregation, calculation) to construct the request.
+    components (filtering, grouping, aggregation, calculation, summary) to construct the request.
     """
     await ctx.info(
         f"Received aggregation request for DataFrame '{dataframe_name}': "
         f"Filters: {'Present' if request.filters else 'None/Empty'}, "
         f"Group by {request.group_by_columns}, "
         f"Aggregations: {'Present and non-empty' if request.aggregations and len(request.aggregations) > 0 else 'None/Empty'}, "
-        f"Calculated Fields: {'Present' if request.calculated_fields else 'None/Empty'}."
+        f"Calculated Fields: {'Present' if request.calculated_fields else 'None/Empty'}, "
+        f"Summary Row: {'Enabled' if request.summary_settings and request.summary_settings.enabled else 'Disabled'}."
     )
 
     try:
@@ -772,10 +708,104 @@ async def aggregate_data(
         if sortable_group_by_cols:
             final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
 
+        # Convert to list of dictionaries first
+        results_list_of_dicts = final_df_to_return.to_dicts()
+
+        # ADD SUMMARY ROW LOGIC (operates on results_list_of_dicts)
+        if request.summary_settings and request.summary_settings.enabled:
+            if not results_list_of_dicts and not final_df_to_return.is_empty():
+                 # This case implies final_df_to_return had columns but no rows,
+                 # or to_dicts() produced empty for some reason.
+                 # If final_df_to_return is empty, summary might still be possible if it's all labels.
+                 # For now, if results_list_of_dicts is empty but final_df_to_return wasn't,
+                 # it's safer to not add a summary row or to add a very basic one.
+                 # Let's assume if final_df_to_return is empty, we might still want a summary of labels.
+                 pass
+
+
+            summary_row_dict: dict[str, Any] = {}
+            output_columns = final_df_to_return.columns # Get columns from the DataFrame before to_dicts
+
+            # Create a lookup for column-specific configurations
+            specific_configs_map: dict[str, SummaryColumnConfiguration] = {}
+            if request.summary_settings.column_specific_summaries:
+                for sc_cfg in request.summary_settings.column_specific_summaries:
+                    if sc_cfg.column_name not in output_columns:
+                        await ctx.warning(f"Summary configuration for column '{sc_cfg.column_name}' provided, but this column is not in the final output. Ignoring.")
+                        continue
+                    specific_configs_map[sc_cfg.column_name] = sc_cfg
+
+            for col_idx, col_name in enumerate(output_columns):
+                summary_value: Any = None  # Default for each cell in summary row
+                col_series = final_df_to_return[col_name] # Original Polars Series for type checking and aggregation
+                col_dtype = col_series.dtype
+
+                specific_config = specific_configs_map.get(col_name)
+
+                if specific_config:
+                    # Apply specific configuration
+                    if specific_config.summary_function == SummaryFunction.LABEL:
+                        summary_value = specific_config.label_text
+                    elif specific_config.summary_function == SummaryFunction.NONE:
+                        summary_value = None
+                    else: # SUM, MEAN, COUNT, MIN, MAX
+                        try:
+                            if final_df_to_return.is_empty() and specific_config.summary_function != SummaryFunction.COUNT:
+                                summary_value = None # Cannot sum, mean, min, max an empty series
+                            elif specific_config.summary_function == SummaryFunction.COUNT:
+                                summary_value = col_series.count() # Polars count() gives number of non-null elements
+                            elif col_dtype in pl.NUMERIC_DTYPES: # Check if dtype is numeric for these aggs
+                                agg_method = getattr(col_series, specific_config.summary_function.value)
+                                summary_value = agg_method()
+                            else: # Non-numeric type for arithmetic agg
+                                await ctx.warning(f"Cannot apply numeric summary '{specific_config.summary_function.value}' to non-numeric column '{col_name}' (type: {col_dtype}). Setting summary to None.")
+                                summary_value = None
+                        except Exception as e:
+                            await ctx.warning(f"Error applying summary function '{specific_config.summary_function.value}' to column '{col_name}': {e}. Setting to None.")
+                            summary_value = None
+                else:
+                    # Apply default configuration
+                    is_first_group_by_col = request.group_by_columns and col_name == request.group_by_columns[0] and col_idx == 0
+
+                    if is_first_group_by_col:
+                        summary_value = request.summary_settings.first_group_by_column_label
+                    elif col_name in request.group_by_columns:
+                        summary_value = None # Subsequent group-by columns are blank in summary
+                    elif col_dtype in pl.NUMERIC_DTYPES:
+                        func_to_apply = request.summary_settings.default_numeric_summary_function
+                        if final_df_to_return.is_empty() and func_to_apply != SummaryFunction.COUNT:
+                             summary_value = None
+                        elif func_to_apply == SummaryFunction.COUNT:
+                            summary_value = col_series.count()
+                        else: # SUM, MEAN, MIN, MAX (already validated it's not LABEL/NONE)
+                            try:
+                                agg_method = getattr(col_series, func_to_apply.value)
+                                summary_value = agg_method()
+                            except Exception as e:
+                                await ctx.warning(f"Error applying default numeric summary '{func_to_apply.value}' to column '{col_name}': {e}. Setting to None.")
+                                summary_value = None
+                    else: # String or other non-numeric, non-group-by column
+                        func_to_apply = request.summary_settings.default_string_summary_function
+                        if func_to_apply == SummaryFunction.LABEL:
+                            # Default string summary as LABEL needs a default text.
+                            # This wasn't in SummaryRowSettings. For now, use None or a generic marker.
+                            # Or, require specific config for string labels.
+                            await ctx.warning(f"Default string summary is 'label' for column '{col_name}' but no specific label_text. Setting to None.")
+                            summary_value = None
+                        elif func_to_apply == SummaryFunction.COUNT:
+                            summary_value = col_series.count()
+                        else: # NONE
+                            summary_value = None
+                
+                summary_row_dict[col_name] = summary_value
+            
+            results_list_of_dicts.append(summary_row_dict)
+            await ctx.info(f"Added summary row to results for '{dataframe_name}'.")
+
         await ctx.info(
-            f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
+            f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape (before to_dicts, excluding summary): {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
         )
-        return final_df_to_return.to_dicts()
+        return results_list_of_dicts # Return the list of dicts (potentially with summary row)
 
     except ValueError as ve:
         await ctx.error(
