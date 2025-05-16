@@ -78,12 +78,13 @@ class FilterCondition(BaseModel):
             "For 'IS_NULL' or 'IS_NOT_NULL', this field is ignored and should be null."
         ),
     )
-    case_sensitive: bool | None = Field(
-        None,
+    case_sensitive: bool = Field( # MODIFIED: type hint to bool
+        False,  # MODIFIED: default to False
         description=(
-            "For string comparison operators (equals, contains, starts_with, ends_with), "
+            "For string comparison operators (equals, not_equals, contains, starts_with, ends_with), "
             "specifies if the comparison should be case-sensitive. "
-            "Defaults to True if None. Not applicable to other operators."
+            "Defaults to False (case-insensitive). Set to True for case-sensitive matching. " # MODIFIED description
+            "Not applicable to other operators or non-string values." # MODIFIED description
         ),
     )
 
@@ -118,10 +119,12 @@ class FilterCondition(BaseModel):
             FilterOperator.STARTS_WITH,
             FilterOperator.ENDS_WITH,
         ]
-        if self.case_sensitive is not None and self.operator not in string_ops:
+        # REMOVED the case_sensitive applicability check block from here.
+        # The runtime warning in _apply_filters is more direct.
+        # if self.case_sensitive is not None and self.operator not in string_ops:
             # Potentially warn or ignore, rather than error, if case_sensitive is set for non-string ops
             # For now, let's allow it but it will be ignored by the logic.
-            pass
+            # pass
 
         return self
 

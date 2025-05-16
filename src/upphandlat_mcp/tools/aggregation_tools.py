@@ -39,19 +39,25 @@ async def _apply_filters(
         value = condition.value
 
         current_expr: pl.Expr
-        is_string_op = False
+        is_string_op = False # Will be set to True if a string comparison is made
 
         if condition.operator == FilterOperator.EQUALS:
-            if isinstance(value, str) and condition.case_sensitive is False:
-                current_expr = col_expr.str.to_lowercase() == str(value).lower()
+            if isinstance(value, str):
                 is_string_op = True
-            else:
+                if condition.case_sensitive is True: # Explicitly case-sensitive
+                    current_expr = col_expr == str(value)
+                else: # Default case-insensitive
+                    current_expr = col_expr.str.to_lowercase() == str(value).lower()
+            else: # Value is not a string, direct comparison
                 current_expr = col_expr == value
         elif condition.operator == FilterOperator.NOT_EQUALS:
-            if isinstance(value, str) and condition.case_sensitive is False:
-                current_expr = col_expr.str.to_lowercase() != str(value).lower()
+            if isinstance(value, str):
                 is_string_op = True
-            else:
+                if condition.case_sensitive is True: # Explicitly case-sensitive
+                    current_expr = col_expr != str(value)
+                else: # Default case-insensitive
+                    current_expr = col_expr.str.to_lowercase() != str(value).lower()
+            else: # Value is not a string, direct comparison
                 current_expr = col_expr != value
         elif condition.operator == FilterOperator.GREATER_THAN:
             current_expr = col_expr > value
@@ -65,64 +71,86 @@ async def _apply_filters(
             assert isinstance(
                 value, list
             ), f"Operator 'in' requires a list of values for column '{condition.column}'."
+            # Case sensitivity for 'is_in' with strings is complex with Polars default.
+            # If truly case-insensitive 'is_in' is needed for strings,
+            # it would require col_expr.str.to_lowercase().is_in([v.lower() for v in value])
+            # For now, using Polars default which is case-sensitive for strings.
+            # If this becomes a requirement, this part needs enhancement.
             current_expr = col_expr.is_in(value)
+            if value and isinstance(value[0], str): # Check if it's a list of strings
+                is_string_op = True # Mark as string op for warning purposes if case_sensitive=True is used
+                if condition.case_sensitive is False:
+                     await ctx.warning(
+                        f"Filter 'case_sensitive=False' for operator 'in' on column '{condition.column}' "
+                        f"currently results in case-sensitive matching for strings due to Polars' default behavior. "
+                        f"For true case-insensitive 'in', further enhancement is needed."
+                    )
+
         elif condition.operator == FilterOperator.NOT_IN:
             assert isinstance(
                 value, list
             ), f"Operator 'not_in' requires a list of values for column '{condition.column}'."
+            # Similar to 'IN', Polars default is case-sensitive for strings.
             current_expr = ~col_expr.is_in(value)
+            if value and isinstance(value[0], str):
+                is_string_op = True
+                if condition.case_sensitive is False:
+                    await ctx.warning(
+                        f"Filter 'case_sensitive=False' for operator 'not_in' on column '{condition.column}' "
+                        f"currently results in case-sensitive matching for strings due to Polars' default behavior. "
+                        f"For true case-insensitive 'not_in', further enhancement is needed."
+                    )
+
         elif condition.operator == FilterOperator.CONTAINS:
             if not isinstance(value, str):
                 raise ValueError(
                     f"Operator 'contains' requires a string value for column '{condition.column}'."
                 )
-            if condition.case_sensitive is False:
+            is_string_op = True
+            if condition.case_sensitive is True: # Explicitly case-sensitive
+                current_expr = col_expr.str.contains(str(value), literal=True)
+            else: # Default case-insensitive
                 current_expr = col_expr.str.to_lowercase().str.contains(
                     str(value).lower(), literal=True
                 )
-            else:
-                current_expr = col_expr.str.contains(str(value), literal=True)
-            is_string_op = True
         elif condition.operator == FilterOperator.STARTS_WITH:
             if not isinstance(value, str):
                 raise ValueError(
                     f"Operator 'starts_with' requires a string value for column '{condition.column}'."
                 )
-
-            if condition.case_sensitive is False:
+            is_string_op = True
+            if condition.case_sensitive is True: # Explicitly case-sensitive
+                current_expr = col_expr.str.starts_with(str(value))
+            else: # Default case-insensitive
                 current_expr = col_expr.str.to_lowercase().str.starts_with(
                     str(value).lower()
                 )
-            else:
-                current_expr = col_expr.str.starts_with(str(value))
-            is_string_op = True
         elif condition.operator == FilterOperator.ENDS_WITH:
             if not isinstance(value, str):
                 raise ValueError(
                     f"Operator 'ends_with' requires a string value for column '{condition.column}'."
                 )
-            if condition.case_sensitive is False:
+            is_string_op = True
+            if condition.case_sensitive is True: # Explicitly case-sensitive
+                current_expr = col_expr.str.ends_with(str(value))
+            else: # Default case-insensitive
                 current_expr = col_expr.str.to_lowercase().str.ends_with(
                     str(value).lower()
                 )
-            else:
-                current_expr = col_expr.str.ends_with(str(value))
-            is_string_op = True
         elif condition.operator == FilterOperator.IS_NULL:
             current_expr = col_expr.is_null()
         elif condition.operator == FilterOperator.IS_NOT_NULL:
             current_expr = col_expr.is_not_null()
         else:
+            # Should not happen due to Enum validation in Pydantic model
             raise ValueError(f"Unsupported filter operator: {condition.operator}")
 
-        if (
-            condition.case_sensitive is not None
-            and not is_string_op
-            and condition.operator
-            not in [FilterOperator.EQUALS, FilterOperator.NOT_EQUALS]
-        ):
+        # MODIFIED Warning Logic:
+        # Warn if case_sensitive is explicitly True but the operation isn't a relevant string comparison.
+        if condition.case_sensitive is True and not is_string_op:
             await ctx.warning(
-                f"Filter 'case_sensitive' flag on column '{condition.column}' with operator '{condition.operator.value}' is ignored as it's not a relevant string operation."
+                f"Filter 'case_sensitive=True' on column '{condition.column}' with operator '{condition.operator.value}' "
+                f"is ignored as the operation is not on string data or not a relevant string comparison type."
             )
 
         if combined_filter_expr is None:
