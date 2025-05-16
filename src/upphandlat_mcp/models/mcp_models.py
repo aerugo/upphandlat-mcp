@@ -58,9 +58,9 @@ class FilterOperator(str, Enum):
     LESS_THAN_OR_EQUAL_TO = "less_than_or_equal_to"
     IN = "in"
     NOT_IN = "not_in"
-    CONTAINS = "contains"  # For strings
-    STARTS_WITH = "starts_with"  # For strings
-    ENDS_WITH = "ends_with"  # For strings
+    CONTAINS = "contains"
+    STARTS_WITH = "starts_with"
+    ENDS_WITH = "ends_with"
     IS_NULL = "is_null"
     IS_NOT_NULL = "is_not_null"
 
@@ -94,23 +94,30 @@ class FilterCondition(BaseModel):
                 # Set value to None for these operators, or raise error if strictness is preferred
                 # For now, let's informatively set it to None if provided.
                 # Consider raising ValueError if self.value is not None for these ops.
-                self.value = None # Or raise ValueError
+                self.value = None  # Or raise ValueError
         elif self.operator in [FilterOperator.IN, FilterOperator.NOT_IN]:
             if not isinstance(self.value, list):
                 raise ValueError(
                     f"For operator '{self.operator.value}', 'value' must be a list. Got: {type(self.value)}"
                 )
-            if not self.value: # Empty list for IN/NOT_IN can be problematic or have unintuitive results
+            if (
+                not self.value
+            ):  # Empty list for IN/NOT_IN can be problematic or have unintuitive results
                 raise ValueError(
                     f"For operator '{self.operator.value}', 'value' list cannot be empty."
                 )
-        elif self.value is None: # All other operators require a value
+        elif self.value is None:  # All other operators require a value
             raise ValueError(
                 f"Operator '{self.operator.value}' requires a 'value', but it was not provided or is null."
             )
 
         # Validate case_sensitive applicability
-        string_ops = [FilterOperator.EQUALS, FilterOperator.CONTAINS, FilterOperator.STARTS_WITH, FilterOperator.ENDS_WITH]
+        string_ops = [
+            FilterOperator.EQUALS,
+            FilterOperator.CONTAINS,
+            FilterOperator.STARTS_WITH,
+            FilterOperator.ENDS_WITH,
+        ]
         if self.case_sensitive is not None and self.operator not in string_ops:
             # Potentially warn or ignore, rather than error, if case_sensitive is set for non-string ops
             # For now, let's allow it but it will be ignored by the logic.
@@ -219,10 +226,10 @@ class AggregationRequest(BaseModel):
     and any additional calculated fields to compute on the aggregated results.
     """
 
-    filters: list[FilterCondition] | None = Field( # ADDED THIS FIELD
+    filters: list[FilterCondition] | None = Field(  # ADDED THIS FIELD
         None,
         description="Optional list of conditions to filter the DataFrame before grouping and aggregation. Conditions are applied with AND logic.",
-    ) # ADDED THIS FIELD
+    )  # ADDED THIS FIELD
     group_by_columns: list[str] = Field(
         ...,
         min_length=1,
