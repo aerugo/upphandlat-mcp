@@ -39,25 +39,25 @@ async def _apply_filters(
         value = condition.value
 
         current_expr: pl.Expr
-        is_string_op = False # Will be set to True if a string comparison is made
+        is_string_op = False
 
         if condition.operator == FilterOperator.EQUALS:
             if isinstance(value, str):
                 is_string_op = True
-                if condition.case_sensitive is True: # Explicitly case-sensitive
+                if condition.case_sensitive is True:
                     current_expr = col_expr == str(value)
-                else: # Default case-insensitive
+                else:
                     current_expr = col_expr.str.to_lowercase() == str(value).lower()
-            else: # Value is not a string, direct comparison
+            else:
                 current_expr = col_expr == value
         elif condition.operator == FilterOperator.NOT_EQUALS:
             if isinstance(value, str):
                 is_string_op = True
-                if condition.case_sensitive is True: # Explicitly case-sensitive
+                if condition.case_sensitive is True:
                     current_expr = col_expr != str(value)
-                else: # Default case-insensitive
+                else:
                     current_expr = col_expr.str.to_lowercase() != str(value).lower()
-            else: # Value is not a string, direct comparison
+            else:
                 current_expr = col_expr != value
         elif condition.operator == FilterOperator.GREATER_THAN:
             current_expr = col_expr > value
@@ -71,16 +71,11 @@ async def _apply_filters(
             assert isinstance(
                 value, list
             ), f"Operator 'in' requires a list of values for column '{condition.column}'."
-            # Case sensitivity for 'is_in' with strings is complex with Polars default.
-            # If truly case-insensitive 'is_in' is needed for strings,
-            # it would require col_expr.str.to_lowercase().is_in([v.lower() for v in value])
-            # For now, using Polars default which is case-sensitive for strings.
-            # If this becomes a requirement, this part needs enhancement.
             current_expr = col_expr.is_in(value)
-            if value and isinstance(value[0], str): # Check if it's a list of strings
-                is_string_op = True # Mark as string op for warning purposes if case_sensitive=True is used
+            if value and isinstance(value[0], str):
+                is_string_op = True
                 if condition.case_sensitive is False:
-                     await ctx.warning(
+                    await ctx.warning(
                         f"Filter 'case_sensitive=False' for operator 'in' on column '{condition.column}' "
                         f"currently results in case-sensitive matching for strings due to Polars' default behavior. "
                         f"For true case-insensitive 'in', further enhancement is needed."
@@ -90,7 +85,6 @@ async def _apply_filters(
             assert isinstance(
                 value, list
             ), f"Operator 'not_in' requires a list of values for column '{condition.column}'."
-            # Similar to 'IN', Polars default is case-sensitive for strings.
             current_expr = ~col_expr.is_in(value)
             if value and isinstance(value[0], str):
                 is_string_op = True
@@ -107,9 +101,9 @@ async def _apply_filters(
                     f"Operator 'contains' requires a string value for column '{condition.column}'."
                 )
             is_string_op = True
-            if condition.case_sensitive is True: # Explicitly case-sensitive
+            if condition.case_sensitive is True:
                 current_expr = col_expr.str.contains(str(value), literal=True)
-            else: # Default case-insensitive
+            else:
                 current_expr = col_expr.str.to_lowercase().str.contains(
                     str(value).lower(), literal=True
                 )
@@ -119,9 +113,9 @@ async def _apply_filters(
                     f"Operator 'starts_with' requires a string value for column '{condition.column}'."
                 )
             is_string_op = True
-            if condition.case_sensitive is True: # Explicitly case-sensitive
+            if condition.case_sensitive is True:
                 current_expr = col_expr.str.starts_with(str(value))
-            else: # Default case-insensitive
+            else:
                 current_expr = col_expr.str.to_lowercase().str.starts_with(
                     str(value).lower()
                 )
@@ -131,9 +125,9 @@ async def _apply_filters(
                     f"Operator 'ends_with' requires a string value for column '{condition.column}'."
                 )
             is_string_op = True
-            if condition.case_sensitive is True: # Explicitly case-sensitive
+            if condition.case_sensitive is True:
                 current_expr = col_expr.str.ends_with(str(value))
-            else: # Default case-insensitive
+            else:
                 current_expr = col_expr.str.to_lowercase().str.ends_with(
                     str(value).lower()
                 )
@@ -142,11 +136,8 @@ async def _apply_filters(
         elif condition.operator == FilterOperator.IS_NOT_NULL:
             current_expr = col_expr.is_not_null()
         else:
-            # Should not happen due to Enum validation in Pydantic model
             raise ValueError(f"Unsupported filter operator: {condition.operator}")
 
-        # MODIFIED Warning Logic:
-        # Warn if case_sensitive is explicitly True but the operation isn't a relevant string comparison.
         if condition.case_sensitive is True and not is_string_op:
             await ctx.warning(
                 f"Filter 'case_sensitive=True' on column '{condition.column}' with operator '{condition.operator.value}' "
@@ -622,7 +613,7 @@ async def aggregate_data(
                 await ctx.warning(
                     f"DataFrame '{dataframe_name}' is empty after applying filters. No data to aggregate."
                 )
-                return []  # Return empty list if filters result in no data
+                return []
         except ValueError as ve:
             await ctx.error(f"Error applying filters to '{dataframe_name}': {ve}")
             logger.error(
