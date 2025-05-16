@@ -106,13 +106,6 @@ class FilterCondition(BaseModel):
                 f"Operator '{self.operator.value}' requires a 'value', but it was not provided or is null."
             )
 
-        string_ops = [
-            FilterOperator.EQUALS,
-            FilterOperator.CONTAINS,
-            FilterOperator.STARTS_WITH,
-            FilterOperator.ENDS_WITH,
-        ]
-
         return self
 
 
