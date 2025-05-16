@@ -1,4 +1,3 @@
-# src/upphandlat_mcp/models/mcp_models.py
 from enum import Enum
 from typing import Any, Literal
 
@@ -78,13 +77,13 @@ class FilterCondition(BaseModel):
             "For 'IS_NULL' or 'IS_NOT_NULL', this field is ignored and should be null."
         ),
     )
-    case_sensitive: bool = Field( # MODIFIED: type hint to bool
-        False,  # MODIFIED: default to False
+    case_sensitive: bool = Field(
+        False,
         description=(
             "For string comparison operators (equals, not_equals, contains, starts_with, ends_with), "
             "specifies if the comparison should be case-sensitive. "
-            "Defaults to False (case-insensitive). Set to True for case-sensitive matching. " # MODIFIED description
-            "Not applicable to other operators or non-string values." # MODIFIED description
+            "Defaults to False (case-insensitive). Set to True for case-sensitive matching. "
+            "Not applicable to other operators or non-string values."
         ),
     )
 
@@ -92,39 +91,27 @@ class FilterCondition(BaseModel):
     def check_value_for_operator(self) -> "FilterCondition":
         if self.operator in [FilterOperator.IS_NULL, FilterOperator.IS_NOT_NULL]:
             if self.value is not None:
-                # Set value to None for these operators, or raise error if strictness is preferred
-                # For now, let's informatively set it to None if provided.
-                # Consider raising ValueError if self.value is not None for these ops.
-                self.value = None  # Or raise ValueError
+                self.value = None
         elif self.operator in [FilterOperator.IN, FilterOperator.NOT_IN]:
             if not isinstance(self.value, list):
                 raise ValueError(
                     f"For operator '{self.operator.value}', 'value' must be a list. Got: {type(self.value)}"
                 )
-            if (
-                not self.value
-            ):  # Empty list for IN/NOT_IN can be problematic or have unintuitive results
+            if not self.value:
                 raise ValueError(
                     f"For operator '{self.operator.value}', 'value' list cannot be empty."
                 )
-        elif self.value is None:  # All other operators require a value
+        elif self.value is None:
             raise ValueError(
                 f"Operator '{self.operator.value}' requires a 'value', but it was not provided or is null."
             )
 
-        # Validate case_sensitive applicability
         string_ops = [
             FilterOperator.EQUALS,
             FilterOperator.CONTAINS,
             FilterOperator.STARTS_WITH,
             FilterOperator.ENDS_WITH,
         ]
-        # REMOVED the case_sensitive applicability check block from here.
-        # The runtime warning in _apply_filters is more direct.
-        # if self.case_sensitive is not None and self.operator not in string_ops:
-            # Potentially warn or ignore, rather than error, if case_sensitive is set for non-string ops
-            # For now, let's allow it but it will be ignored by the logic.
-            # pass
 
         return self
 
@@ -229,20 +216,18 @@ class AggregationRequest(BaseModel):
     and any additional calculated fields to compute on the aggregated results.
     """
 
-    filters: list[FilterCondition] | None = Field(  # ADDED THIS FIELD
+    filters: list[FilterCondition] | None = Field(
         None,
         description="Optional list of conditions to filter the DataFrame before grouping and aggregation. Conditions are applied with AND logic.",
-    )  # ADDED THIS FIELD
+    )
     group_by_columns: list[str] = Field(
         ...,
         min_length=1,
         description="List of column names to group the data by.",
     )
-    aggregations: list[Aggregation] | None = (
-        Field(  # CHANGED: Made optional, defaults to None
-            None,
-            description="List of aggregation operations to perform. Can be empty or None if only applying calculated fields to original grouped columns.",
-        )
+    aggregations: list[Aggregation] | None = Field(
+        None,
+        description="List of aggregation operations to perform. Can be empty or None if only applying calculated fields to original grouped columns.",
     )
     calculated_fields: list[CalculatedFieldType] | None = Field(
         None,
@@ -260,7 +245,7 @@ class AggregationRequest(BaseModel):
         """
         all_output_names: set[str] = set(self.group_by_columns)
 
-        if self.aggregations:  # Only process if aggregations are provided
+        if self.aggregations:
             for agg in self.aggregations:
                 for func in agg.functions:
                     alias = agg.rename.get(func.value, f"{agg.column}_{func.value}")
@@ -270,17 +255,8 @@ class AggregationRequest(BaseModel):
                         )
                     all_output_names.add(alias)
 
-        # If aggregations is empty, `all_output_names` initially only contains group_by_columns.
-        # `_apply_calculated_fields` will check its input columns against what's available
-        # (which would be original columns + group_by_columns if no actual aggregation happened).
-
         if self.calculated_fields:
-            temp_available_cols = set(
-                all_output_names
-            )  # Start with group_by and aggregated columns
-            # If no aggregations, this `temp_available_cols` needs to be populated with
-            # *all original columns* in the `_apply_calculated_fields` context for validation.
-            # The model validator here can only check for conflicts among defined outputs.
+            temp_available_cols = set(all_output_names)
 
             for calc_field_config in self.calculated_fields:
                 output_name = calc_field_config.output_column_name
