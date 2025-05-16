@@ -10,9 +10,110 @@ from upphandlat_mcp.models.mcp_models import (
     AggregationRequest,
     ArithmeticOperationType,
     CalculatedFieldType,
+    FilterCondition,  # ADDED
+    FilterOperator,   # ADDED
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ADD NEW HELPER FUNCTION _apply_filters:
+async def _apply_filters(
+    df: pl.DataFrame,
+    filter_conditions: list[FilterCondition],
+    available_columns: set[str],
+    ctx: Context,
+) -> pl.DataFrame:
+    """Applies a list of filter conditions to the DataFrame."""
+    if not filter_conditions:
+        return df
+
+    combined_filter_expr: pl.Expr | None = None
+
+    for condition in filter_conditions:
+        if condition.column not in available_columns:
+            raise ValueError(
+                f"Filter column '{condition.column}' not found in DataFrame. Available columns: {list(available_columns)}"
+            )
+
+        col_expr = pl.col(condition.column)
+        value = condition.value # Value has been validated by Pydantic model
+
+        current_expr: pl.Expr
+        is_string_op = False
+
+        if condition.operator == FilterOperator.EQUALS:
+            if isinstance(value, str) and condition.case_sensitive is False:
+                current_expr = col_expr.str.to_lowercase() == str(value).lower()
+                is_string_op = True
+            else:
+                current_expr = col_expr == value
+        elif condition.operator == FilterOperator.NOT_EQUALS:
+            if isinstance(value, str) and condition.case_sensitive is False:
+                current_expr = col_expr.str.to_lowercase() != str(value).lower()
+                is_string_op = True
+            else:
+                current_expr = col_expr != value
+        elif condition.operator == FilterOperator.GREATER_THAN:
+            current_expr = col_expr > value
+        elif condition.operator == FilterOperator.GREATER_THAN_OR_EQUAL_TO:
+            current_expr = col_expr >= value
+        elif condition.operator == FilterOperator.LESS_THAN:
+            current_expr = col_expr < value
+        elif condition.operator == FilterOperator.LESS_THAN_OR_EQUAL_TO:
+            current_expr = col_expr <= value
+        elif condition.operator == FilterOperator.IN:
+            current_expr = col_expr.is_in(value) # value is guaranteed to be a list
+        elif condition.operator == FilterOperator.NOT_IN:
+            current_expr = ~col_expr.is_in(value) # value is guaranteed to be a list
+        elif condition.operator == FilterOperator.CONTAINS:
+            if not isinstance(value, str):
+                raise ValueError(f"Operator 'contains' requires a string value for column '{condition.column}'.")
+            if condition.case_sensitive is False:
+                current_expr = col_expr.str.to_lowercase().str.contains(str(value).lower(), literal=True)
+            else:
+                current_expr = col_expr.str.contains(str(value), literal=True)
+            is_string_op = True
+        elif condition.operator == FilterOperator.STARTS_WITH:
+            if not isinstance(value, str):
+                raise ValueError(f"Operator 'starts_with' requires a string value for column '{condition.column}'.")
+            # Polars starts_with/ends_with are case-sensitive by default.
+            # For case-insensitivity, we convert both to lowercase.
+            if condition.case_sensitive is False:
+                 current_expr = col_expr.str.to_lowercase().str.starts_with(str(value).lower())
+            else:
+                current_expr = col_expr.str.starts_with(str(value))
+            is_string_op = True
+        elif condition.operator == FilterOperator.ENDS_WITH:
+            if not isinstance(value, str):
+                raise ValueError(f"Operator 'ends_with' requires a string value for column '{condition.column}'.")
+            if condition.case_sensitive is False:
+                current_expr = col_expr.str.to_lowercase().str.ends_with(str(value).lower())
+            else:
+                current_expr = col_expr.str.ends_with(str(value))
+            is_string_op = True
+        elif condition.operator == FilterOperator.IS_NULL:
+            current_expr = col_expr.is_null()
+        elif condition.operator == FilterOperator.IS_NOT_NULL:
+            current_expr = col_expr.is_not_null()
+        else:
+            # Should not happen due to Enum validation
+            raise ValueError(f"Unsupported filter operator: {condition.operator}")
+
+        # Ensure case_sensitive is only considered for string operations where it makes sense
+        if condition.case_sensitive is not None and not is_string_op and condition.operator not in [FilterOperator.EQUALS, FilterOperator.NOT_EQUALS]:
+             await ctx.warning(f"Filter 'case_sensitive' flag on column '{condition.column}' with operator '{condition.operator.value}' is ignored as it's not a relevant string operation.")
+
+
+        if combined_filter_expr is None:
+            combined_filter_expr = current_expr
+        else:
+            combined_filter_expr = combined_filter_expr & current_expr
+
+    if combined_filter_expr is not None:
+        await ctx.info(f"Applying combined filter expression: {combined_filter_expr}")
+        return df.filter(combined_filter_expr)
+    return df
 
 
 async def _build_polars_aggregation_expressions(
@@ -234,6 +335,14 @@ async def aggregate_data(
 
     ```json
     {
+      "filters": [ // ADDED THIS SECTION
+        {
+          "column": "column_name_to_filter",
+          "operator": "equals", // e.g., "equals", "greater_than", "in", "contains"
+          "value": "some_value", // or [1, 2, 3] for "in"
+          "case_sensitive": false // optional for string ops
+        }
+      ], // END ADDED SECTION
       "group_by_columns": ["column_name1", "column_name2"],
       "aggregations": [
         {
@@ -256,13 +365,34 @@ async def aggregate_data(
 
     **Detailed breakdown of `AggregationRequest` fields:**
 
-    1.  **`group_by_columns: list[str]` (Required)**
+    0.  **`filters: list[FilterCondition] | None` (Optional)**  # ADDED NEW FIELD DOC
+        *   A list of `FilterCondition` objects, each defining a criterion to filter the source DataFrame
+            *before* any grouping or aggregation takes place.
+        *   All conditions in the list are combined using AND logic (i.e., a row must satisfy all specified filters).
+        *   If omitted, `null`, or an empty list, no pre-filtering is applied.
+        *   Each `FilterCondition` object has:
+            *   `column: str` (Required): The name of the column from the source DataFrame to filter on.
+            *   `operator: FilterOperator` (Required): The comparison operator. Supported values:
+                `"equals"`, `"not_equals"`, `"greater_than"`, `"greater_than_or_equal_to"`,
+                `"less_than"`, `"less_than_or_equal_to"`, `"in"`, `"not_in"`,
+                `"contains"` (for strings), `"starts_with"` (for strings), `"ends_with"` (for strings),
+                `"is_null"`, `"is_not_null"`.
+            *   `value: Any | None` (Usually Required): The value to compare against.
+                *   For `"in"` or `"not_in"`, this must be a list of values (e.g., `["A", "B", "C"]`).
+                *   For `"is_null"` or `"is_not_null"`, this field is ignored and can be `null`.
+                *   For other operators, this is the single value for comparison.
+            *   `case_sensitive: bool | None` (Optional, Default: `true` for relevant string ops):
+                For string comparison operators (`"equals"`, `"contains"`, `"starts_with"`, `"ends_with"`
+                when the column is string type), specifies if the comparison should be case-sensitive.
+                If `false`, the comparison is made case-insensitively. Ignored for non-string operations.
+
+    1.  **`group_by_columns: list[str]` (Required)** # Renumber existing fields
         *   A list of column names to group the data by. At least one column must be provided.
         *   The unique combinations of values in these columns will form the groups for aggregation.
         *   Example: `["År", "Sektor för köpare"]` would group data by year and buyer sector.
         *   These columns will always be present in the output.
 
-    2.  **`aggregations: list[Aggregation] | None` (Optional)**
+    2.  **`aggregations: list[Aggregation] | None` (Optional)** # Renumber
         *   A list of `Aggregation` objects, each defining how to aggregate a specific column from the
           original `dataframe_name` over the defined groups.
         *   If omitted, `null`, or an empty list, no new summary aggregations are computed.
@@ -285,9 +415,9 @@ async def aggregate_data(
                 *   If not provided, or a function is not renamed, output columns are named
                   automatically as `{column}_{function}` (e.g., `"Antal upphandlingar, Antal_sum"`).
 
-    3.  **`calculated_fields: list[CalculatedFieldType] | None` (Optional)**
+    3.  **`calculated_fields: list[CalculatedFieldType] | None` (Optional)** # Renumber
         *   A list of objects, each defining a calculation to create a new column.
-        *   **Order of Operation:** Calculations are performed *after* all aggregations (if any) are completed.
+        *   **Order of Operation:** Filtering is applied first. Then, calculations are performed *after* all aggregations (if any) are completed on the filtered data.
         *   **Input Columns for Calculations:**
             *   If `aggregations` are defined and produce results: Calculated fields can use the
               `group_by_columns` and any newly created aggregated columns as inputs.
@@ -419,6 +549,7 @@ async def aggregate_data(
             }
         source_df: pl.DataFrame = df_dict[dataframe_name]
     except KeyError:
+        # ... (error handling remains)
         await ctx.error(
             "DataFrame dictionary 'dataframes' not found in lifespan context."
         )
@@ -426,8 +557,31 @@ async def aggregate_data(
 
     df_column_names = set(source_df.columns)
 
+    # APPLY FILTERS FIRST (NEW STEP)
+    filtered_df = source_df
+    if request.filters:
+        try:
+            await ctx.info(f"Applying {len(request.filters)} filter(s) to DataFrame '{dataframe_name}' before aggregation.")
+            filtered_df = await _apply_filters(
+                source_df, request.filters, df_column_names, ctx
+            )
+            await ctx.info(f"DataFrame '{dataframe_name}' shape after filtering: {filtered_df.shape}. Original shape: {source_df.shape}")
+            if filtered_df.is_empty():
+                await ctx.warning(f"DataFrame '{dataframe_name}' is empty after applying filters. No data to aggregate.")
+                return [] # Return empty list if filters result in no data
+        except ValueError as ve:
+            await ctx.error(f"Error applying filters to '{dataframe_name}': {ve}")
+            logger.error(f"Filter application error for '{dataframe_name}': {ve}", exc_info=True)
+            return {"error": f"Filter error: {str(ve)}"}
+
+    # Subsequent operations use filtered_df instead of source_df
+    # Update df_column_names to reflect columns available after potential filtering
+    # (though filtering doesn't change columns, it's good practice if it could)
+    # df_column_names = set(filtered_df.columns) # Not strictly necessary here as filtering preserves columns
+
     for col in request.group_by_columns:
-        if col not in df_column_names:
+        if col not in df_column_names: # Check against original columns, as filtering doesn't remove them
+            # ... (error handling remains)
             await ctx.error(
                 f"Invalid group_by_column for DataFrame '{dataframe_name}': '{col}' not found. Available: {list(df_column_names)}"
             )
@@ -437,13 +591,15 @@ async def aggregate_data(
 
     if request.aggregations:
         for agg_config in request.aggregations:
-            if agg_config.column not in df_column_names:
+            if agg_config.column not in df_column_names: # Check against original columns
+                # ... (error handling remains)
                 await ctx.error(
                     f"Invalid aggregation source column for DataFrame '{dataframe_name}': '{agg_config.column}' not found. Available: {list(df_column_names)}"
                 )
                 return {
                     "error": f"Invalid aggregation source column: '{agg_config.column}' not found in '{dataframe_name}'."
                 }
+
     try:
         intermediate_df: pl.DataFrame
         columns_after_aggregation_or_grouping: set[str]
@@ -455,10 +611,11 @@ async def aggregate_data(
             ) = await _build_polars_aggregation_expressions(
                 request.aggregations,
                 set(request.group_by_columns),
-                df_column_names,
+                df_column_names, # Pass original df_column_names for validation within build
                 ctx,
             )
-            grouped_df = source_df.group_by(
+            # Perform grouping on the potentially filtered DataFrame
+            grouped_df = filtered_df.group_by(
                 request.group_by_columns, maintain_order=True
             )
             intermediate_df = grouped_df.agg(polars_agg_expressions)
@@ -467,22 +624,23 @@ async def aggregate_data(
                 f"Performed aggregation on '{dataframe_name}'. Resulting columns: {intermediate_df.columns}"
             )
         else:
+            # ... (existing logic for no aggregations, but use filtered_df)
             if not request.group_by_columns:
                 await ctx.error("`group_by_columns` must be provided.")
                 return {
                     "error": "`group_by_columns` must be provided even if no aggregations are performed."
                 }
-
-            intermediate_df = source_df.select(request.group_by_columns).unique(
+            # Select from filtered_df
+            intermediate_df = filtered_df.select(request.group_by_columns).unique(
                 maintain_order=True
             )
             columns_after_aggregation_or_grouping = set(request.group_by_columns)
             await ctx.info(
-                f"No aggregations requested for '{dataframe_name}'. Initial columns for potential calculated fields: {intermediate_df.columns} (based on group_by)."
+                f"No aggregations requested for '{dataframe_name}'. Initial columns for potential calculated fields: {intermediate_df.columns} (based on group_by from filtered data)."
             )
 
-        if request.calculated_fields:
 
+        if request.calculated_fields:
             cols_available_for_calc: set[str]
             df_for_calc: pl.DataFrame
 
@@ -490,8 +648,15 @@ async def aggregate_data(
                 df_for_calc = intermediate_df
                 cols_available_for_calc = columns_after_aggregation_or_grouping
             else:
-                df_for_calc = source_df
-                cols_available_for_calc = df_column_names
+                # If no aggregations, calculated fields operate on the (potentially filtered) original data structure
+                # but applied to the groups defined by group_by_columns.
+                # The _apply_calculated_fields function needs the full set of original columns
+                # if it's to operate on them before a final unique/selection.
+                # This part needs careful thought: if no aggregation, calculated fields are on original data.
+                # The current structure of _apply_calculated_fields takes a df and applies calcs.
+                # If no aggregation, df_for_calc should be filtered_df.
+                df_for_calc = filtered_df
+                cols_available_for_calc = df_column_names # Original columns are available on filtered_df
 
             final_df = await asyncio.to_thread(
                 _apply_calculated_fields,
@@ -503,70 +668,87 @@ async def aggregate_data(
             await ctx.info(
                 f"Applied calculated fields to '{dataframe_name}'. Resulting columns: {final_df.columns}"
             )
+            # If no aggregations, we need to ensure we only output the group_by_columns and the new calculated_fields
+            # and make sure it's unique by these.
             if not (request.aggregations and len(request.aggregations) > 0):
                 temp_output_cols = list(request.group_by_columns) + [
                     cf.output_column_name for cf in request.calculated_fields
                 ]
+                # Ensure all selected columns actually exist in final_df after calculations
+                temp_output_cols = [col for col in temp_output_cols if col in final_df.columns]
+                if not temp_output_cols:
+                     await ctx.warning(f"Calculated fields on original data for '{dataframe_name}' did not produce any of the requested group_by or output columns. Returning empty.")
+                     return []
                 final_df = final_df.select(temp_output_cols)
-
+                # .unique() will be applied later
         else:
             final_df = intermediate_df
 
+        # ... (The rest of the final column selection, unique application, and sorting logic remains largely the same,
+        #      but ensure it operates on `final_df` which has been derived from `filtered_df` or its aggregations)
+
         columns_to_select_final = list(request.group_by_columns)
 
+        # Add aggregated column names if aggregations were performed
         if request.aggregations and len(request.aggregations) > 0:
+            # columns_after_aggregation_or_grouping contains group_by_cols + aggregated_cols
             for alias in columns_after_aggregation_or_grouping:
                 if alias not in columns_to_select_final:
                     columns_to_select_final.append(alias)
 
+        # Add calculated field output names
         if request.calculated_fields:
             for cf_item in request.calculated_fields:
+                # Only add if it's a new column not already covered (e.g. not a group_by_column)
                 if cf_item.output_column_name not in columns_to_select_final:
                     columns_to_select_final.append(cf_item.output_column_name)
 
+        # Ensure all columns in columns_to_select_final actually exist in final_df
         final_columns_present_in_df = [
             col for col in columns_to_select_final if col in final_df.columns
         ]
 
         if not final_columns_present_in_df:
+            # This block handles cases where the selection logic results in no columns.
+            # It might need adjustment based on how filters/calcs interact with group_by.
+            # If group_by_columns are the only thing left and they exist, select unique on them.
             await ctx.warning(
                 f"No valid output columns to select in the final DataFrame for '{dataframe_name}'. "
                 f"Requested: {columns_to_select_final}, Available in final_df: {final_df.columns}. "
-                "This might happen if group_by_columns were requested but no aggregations or calculations produced other usable columns, "
-                "or if calculated fields on original data did not align with group_by structure."
             )
-            if (
-                all(gb_col in source_df.columns for gb_col in request.group_by_columns)
-                and set(final_columns_present_in_df) == set(request.group_by_columns)
-                and not (request.aggregations and len(request.aggregations) > 0)
-                and not request.calculated_fields
-            ):
-                final_df_to_return = source_df.select(request.group_by_columns).unique(
-                    maintain_order=True
-                )
-            elif not request.group_by_columns:
+            # If only group_by_columns were requested and no aggs/calcs, and they are valid
+            if all(gb_col in filtered_df.columns for gb_col in request.group_by_columns) and \
+               set(final_columns_present_in_df) == set(request.group_by_columns) and \
+               not (request.aggregations and len(request.aggregations) > 0) and \
+               not request.calculated_fields:
+                final_df_to_return = filtered_df.select(request.group_by_columns).unique(maintain_order=True)
+            elif not request.group_by_columns: # Should be caught by Pydantic, but defensive
                 return []
-            else:
-                valid_gb_cols = [
-                    gbc for gbc in request.group_by_columns if gbc in final_df.columns
-                ]
+            else: # Try to select at least the valid group_by_columns if nothing else
+                valid_gb_cols = [gbc for gbc in request.group_by_columns if gbc in final_df.columns]
                 if valid_gb_cols:
-                    final_df_to_return = final_df.select(valid_gb_cols).unique(
-                        maintain_order=True
-                    )
-                else:
+                    final_df_to_return = final_df.select(valid_gb_cols).unique(maintain_order=True)
+                else: # No valid columns at all
                     return []
         else:
             final_df_to_return = final_df.select(final_columns_present_in_df)
 
+        # If no actual aggregation functions were run (only grouping, possibly with calculated fields on original data)
+        # apply unique to the final set of selected columns.
         if not (request.aggregations and len(request.aggregations) > 0):
             if final_df_to_return.height > 0 and final_df_to_return.columns:
                 final_df_to_return = final_df_to_return.unique(
                     subset=final_df_to_return.columns, maintain_order=True
                 )
 
-        sortable_group_by_cols = [
-            gbc for gbc in request.group_by_columns if gbc in final_df_to_return.columns
+        # Sort by group_by_columns if they exist in the final result
+        sortable_group_by_cols = [gbc for gbc in request.group_by_columns if gbc in final_df_to_return.columns]
+        if sortable_group_by_cols:
+            final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
+
+
+        await ctx.info(
+            f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
         ]
         if sortable_group_by_cols:
             final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
