@@ -351,6 +351,12 @@ async def aggregate_data(
     """
     Performs powerful data aggregation, grouping, and calculations on a specified dataset.
 
+
+    Before using this tool, ensure you have the correct DataFrame names and valid column names
+    or filter values. You can discover available DataFrames and their columns using the
+    `list_available_dataframes()` tool. Discover valid values for filter conditions
+    is done by using get_distinct_column_values.
+
     This is the primary tool for summarizing data, finding trends, calculating metrics,
     and deriving new insights from the available CSV datasets. It allows you to:
     1. Group data by one or more columns.
