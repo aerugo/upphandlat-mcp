@@ -429,10 +429,11 @@ async def aggregate_data(
                 *   For `"in"` or `"not_in"`, this must be a list of values (e.g., `["A", "B", "C"]`).
                 *   For `"is_null"` or `"is_not_null"`, this field is ignored and can be `null`.
                 *   For other operators, this is the single value for comparison.
-            *   `case_sensitive: bool | None` (Optional, Default: `true` for relevant string ops):
-                For string comparison operators (`"equals"`, `"contains"`, `"starts_with"`, `"ends_with"`
-                when the column is string type), specifies if the comparison should be case-sensitive.
-                If `false`, the comparison is made case-insensitively. Ignored for non-string operations.
+            *   `case_sensitive: bool` (Optional, Default: `False`): # MODIFIED
+                For string comparison operators (`"equals"`, `"not_equals"`, `"contains"`, `"starts_with"`, `"ends_with"`
+                when the column and value are strings), specifies if the comparison should be case-sensitive.
+                Defaults to `False` (case-insensitive). Set to `True` for case-sensitive matching. # MODIFIED
+                Ignored for non-string operations or other operators. # MODIFIED
 
     1.  **`group_by_columns: list[str]` (Required)** # Renumber existing fields
         *   A list of column names to group the data by. At least one column must be provided.
