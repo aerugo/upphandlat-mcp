@@ -43,7 +43,7 @@ def csv_aggregator_entry_point() -> str:
         '  "column": "column_to_filter_on",\n'
         '  "operator": "filter_operator",\n'
         '  "value": "value_for_comparison", // or list for "in"/"not_in", or null for "is_null"/"is_not_null"\n'
-        '  "case_sensitive": true // Optional, for string ops. Defaults to false (case-insensitive). Set to true for case-sensitive.\n'
+        '  "case_sensitive": false // For string ops. Note: String comparisons are ALWAYS case-insensitive. This flag is effectively ignored for string ops but kept for compatibility. It is ignored for non-string ops.\n'
         "}\n"
         "```\n"
         "Supported `filter_operator` values:\n"
