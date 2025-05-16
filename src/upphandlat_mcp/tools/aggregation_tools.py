@@ -750,12 +750,6 @@ async def aggregate_data(
 
         await ctx.info(
             f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
-        ]
-        if sortable_group_by_cols:
-            final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
-
-        await ctx.info(
-            f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape: {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
         )
         return final_df_to_return.to_dicts()
 
