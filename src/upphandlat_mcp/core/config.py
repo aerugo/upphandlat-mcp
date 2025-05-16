@@ -1,4 +1,3 @@
-# src/upphandlat_mcp/core/config.py
 from pathlib import Path
 from typing import Any
 
@@ -6,7 +5,6 @@ import polars as pl
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Helper to map string dtypes from YAML to Polars dtypes
 POLARS_DTYPE_MAP = {
     "Utf8": pl.Utf8,
     "Int8": pl.Int8,
@@ -44,10 +42,10 @@ class ReadCsvOptions(BaseModel):
     null_values: list[str] | str | None = Field(
         None, description="Values to interpret as null."
     )
-    infer_schema_length: int | None = Field( # ADDED LINE
-        None, # Default to None, so if not in YAML, Polars default is used.
-        description="Number of rows to infer schema from. If None, Polars default (usually 100) is used.", # ADDED LINE
-    ) # ADDED LINE
+    infer_schema_length: int | None = Field(
+        None,
+        description="Number of rows to infer schema from. If None, Polars default (usually 100) is used.",
+    )
 
     def to_polars_args(self) -> dict[str, Any]:
         args = self.model_dump(exclude_none=True, exclude={"schema_overrides"})

@@ -1,4 +1,3 @@
-# src/upphandlat_mcp/prompts/entry_prompt.py
 from mcp.server.fastmcp.prompts import base
 
 
@@ -10,9 +9,8 @@ def csv_aggregator_entry_point() -> str:
         "1.  **Discover Data Sources:** If you don't know which datasets are available, first use `list_available_dataframes()`.\n"
         "2.  **Select Data Source:** For all other tools, you **MUST** provide the `dataframe_name` parameter, specifying which loaded dataset to query.\n"
         "3.  **Understand Data Structure:** Use `list_columns(dataframe_name='your_chosen_df')` and `get_schema(dataframe_name='your_chosen_df')` for the selected DataFrame.\n"
-        "4.  **Explore Column Content (Optional):** Use `get_distinct_column_values(...)` or `fuzzy_search_column_values(...)` to understand values in columns you might filter or group by.\n" # MODIFIED/ADDED
-        "5.  **Filter, Query/Aggregate:** Use `aggregate_data(...)` on the chosen DataFrame, optionally applying filters before grouping and aggregation.\n\n" # MODIFIED
-
+        "4.  **Explore Column Content (Optional):** Use `get_distinct_column_values(...)` or `fuzzy_search_column_values(...)` to understand values in columns you might filter or group by.\n"
+        "5.  **Filter, Query/Aggregate:** Use `aggregate_data(...)` on the chosen DataFrame, optionally applying filters before grouping and aggregation.\n\n"
         "**Available Tools & Common Use Cases:**\n\n"
         "0.  **`list_available_dataframes()`:**\n"
         "    *   **Use When:** You need to know the names of all loaded CSV datasets.\n"
@@ -26,20 +24,18 @@ def csv_aggregator_entry_point() -> str:
         "3.  **`get_distinct_column_values(dataframe_name: str, column_name: str, ...)`:**\n"
         "    *   **Use When:** You need to find unique values in a column of a specific dataset.\n"
         "    *   **Example:** \"List unique categories in the 'products' dataset.\" (Requires `dataframe_name='products', column_name='category'`)\n\n"
-        # MODIFY `aggregate_data` documentation:
-        "5.  **`aggregate_data(dataframe_name: str, request: AggregationRequest)`:**\n" # Ensure numbering is correct
-        "    *   **Use When:** The user wants to filter, summarize, group, or calculate new metrics from data in a specific dataset, optionally including a final summary row.\n" # MODIFIED
+        "5.  **`aggregate_data(dataframe_name: str, request: AggregationRequest)`:**\n"
+        "    *   **Use When:** The user wants to filter, summarize, group, or calculate new metrics from data in a specific dataset, optionally including a final summary row.\n"
         "    *   **`dataframe_name` (str):** The name of the dataset to operate on.\n"
-        "    *   **`AggregationRequest` Structure:** Defines filtering, grouping, aggregations, calculated fields, and summary row settings.\n" # MODIFIED
+        "    *   **`AggregationRequest` Structure:** Defines filtering, grouping, aggregations, calculated fields, and summary row settings.\n"
         "        *   `filters` (list[FilterCondition], optional): Conditions to filter data *before* grouping/aggregation. Applied with AND logic.\n"
         "        *   `group_by_columns` (list[str])\n"
         "        *   `aggregations` (list[Aggregation], optional)\n"
         "        *   `calculated_fields` (list[CalculatedFieldType], optional)\n"
-        "        *   `summary_settings` (SummaryRowSettings, optional): Configuration for adding a summary row.\n" # ADDED
+        "        *   `summary_settings` (SummaryRowSettings, optional): Configuration for adding a summary row.\n"
         "    *   **Examples:**\n"
         "        *   \"What is the total sales per region in the 'sales_2023' dataset?\" -> Use `aggregate_data` with `dataframe_name='sales_2023'`, group by 'region', sum 'sales'.\n"
         "        *   \"For the 'procurement_data' dataset, calculate average quantity and total sales for each product category.\" -> Use `aggregate_data` with `dataframe_name='procurement_data'`, group by 'category', mean 'quantity', sum 'sales'.\n\n"
-
         "**`FilterCondition` Object Structure (for `filters` list):**\n"
         "Each object in the `filters` list defines one condition:\n"
         "```json\n"
@@ -47,7 +43,7 @@ def csv_aggregator_entry_point() -> str:
         '  "column": "column_to_filter_on",\n'
         '  "operator": "filter_operator",\n'
         '  "value": "value_for_comparison", // or list for "in"/"not_in", or null for "is_null"/"is_not_null"\n'
-        '  "case_sensitive": true // Optional, for string ops. Defaults to false (case-insensitive). Set to true for case-sensitive.\n'  # MODIFIED example and description
+        '  "case_sensitive": true // Optional, for string ops. Defaults to false (case-insensitive). Set to true for case-sensitive.\n'
         "}\n"
         "```\n"
         "Supported `filter_operator` values:\n"
@@ -57,8 +53,7 @@ def csv_aggregator_entry_point() -> str:
         '  `"in"`, `"not_in"` (value must be a list, e.g., `["A", "B"]`)\n'
         '  `"contains"`, `"starts_with"`, `"ends_with"` (for string columns)\n'
         '  `"is_null"`, `"is_not_null"` (value field is ignored/should be null)\n\n'
-
-        "**`SummaryRowSettings` Object Structure (for `summary_settings` field):**\n" # ADDED NEW SECTION
+        "**`SummaryRowSettings` Object Structure (for `summary_settings` field):**\n"
         "This optional object controls the generation of a summary row at the end of the results.\n"
         "```json\n"
         "{\n"
@@ -82,18 +77,16 @@ def csv_aggregator_entry_point() -> str:
         "  - Other `group_by_columns`: Get `null`.\n"
         "  - Numeric output columns: Summarized using `default_numeric_summary_function`.\n"
         "  - String/other output columns: Summarized using `default_string_summary_function`.\n\n"
-
         "**General Strategy & Workflow (Recap):**\n\n"
         "1.  **Identify Data Source:** Use `list_available_dataframes()` if unsure. Pick one `dataframe_name`.\n"
         "2.  **Inspect Columns/Schema:** Use `list_columns()` and `get_schema()` with the chosen `dataframe_name`.\n"
         "3.  **Explore Specific Column Values (if needed):** Use `get_distinct_column_values()` or `fuzzy_search_column_values()`.\n"
         "4.  **Plan Filtering (if needed):** Identify any conditions to narrow down the data before aggregation.\n"
         "5.  **Plan Aggregation:** If summarizing, identify `group_by_columns`, `aggregations`, and `calculated_fields` for the data within the chosen `dataframe_name`.\n"
-        "6.  **Construct `AggregationRequest`:** Carefully build the JSON request for `aggregate_data`, including any `filters` and optional `summary_settings`.\n" # MODIFIED
+        "6.  **Construct `AggregationRequest`:** Carefully build the JSON request for `aggregate_data`, including any `filters` and optional `summary_settings`.\n"
         "7.  **Execute and Present:** Call `aggregate_data`, always providing the `dataframe_name` and other required parameters.\n"
         "8.  **Handle Errors:** If a tool returns an error, explain it to the user and try to adjust the request if possible.\n\n"
-
-        "**Example of `aggregate_data` call with filters and summary row:**\n" # MODIFIED EXAMPLE
+        "**Example of `aggregate_data` call with filters and summary row:**\n"
         "Tool name: `aggregate_data`\n"
         "Parameters:\n"
         "```json\n"
@@ -102,7 +95,7 @@ def csv_aggregator_entry_point() -> str:
         '  "request": {\n'
         '    "filters": [\n'
         '      {"column": "status", "operator": "equals", "value": "Active"}\n'
-        '    ],\n'
+        "    ],\n"
         '    "group_by_columns": ["category"],\n'
         '    "aggregations": [\n'
         "      {\n"
@@ -116,14 +109,14 @@ def csv_aggregator_entry_point() -> str:
         '        "rename": {"count": "number_of_items"}\n'
         "      }\n"
         "    ],\n"
-        '    "summary_settings": {\n' # ADDED SUMMARY EXAMPLE
+        '    "summary_settings": {\n'
         '      "enabled": true,\n'
         '      "first_group_by_column_label": "All Categories Total",\n'
         '      "default_numeric_summary_function": "sum",\n'
         '      "column_specific_summaries": [\n'
         '        {"column_name": "number_of_items", "summary_function": "sum"}\n'
-        '      ]\n'
-        '    }\n'
+        "      ]\n"
+        "    }\n"
         "  }\n"
         "}\n"
         "```\n\n"

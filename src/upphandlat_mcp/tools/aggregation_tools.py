@@ -12,9 +12,9 @@ from upphandlat_mcp.models.mcp_models import (
     CalculatedFieldType,
     FilterCondition,
     FilterOperator,
-    SummaryFunction,       # ADDED
-    SummaryRowSettings,    # ADDED
-    SummaryColumnConfiguration # ADDED
+    SummaryColumnConfiguration,
+    SummaryFunction,
+    SummaryRowSettings,
 )
 
 logger = logging.getLogger(__name__)
@@ -708,104 +708,121 @@ async def aggregate_data(
         if sortable_group_by_cols:
             final_df_to_return = final_df_to_return.sort(sortable_group_by_cols)
 
-        # Convert to list of dictionaries first
         results_list_of_dicts = final_df_to_return.to_dicts()
 
-        # ADD SUMMARY ROW LOGIC (operates on results_list_of_dicts)
         if request.summary_settings and request.summary_settings.enabled:
             if not results_list_of_dicts and not final_df_to_return.is_empty():
-                 # This case implies final_df_to_return had columns but no rows,
-                 # or to_dicts() produced empty for some reason.
-                 # If final_df_to_return is empty, summary might still be possible if it's all labels.
-                 # For now, if results_list_of_dicts is empty but final_df_to_return wasn't,
-                 # it's safer to not add a summary row or to add a very basic one.
-                 # Let's assume if final_df_to_return is empty, we might still want a summary of labels.
-                 pass
-
+                pass
 
             summary_row_dict: dict[str, Any] = {}
-            output_columns = final_df_to_return.columns # Get columns from the DataFrame before to_dicts
+            output_columns = final_df_to_return.columns
 
-            # Create a lookup for column-specific configurations
             specific_configs_map: dict[str, SummaryColumnConfiguration] = {}
             if request.summary_settings.column_specific_summaries:
                 for sc_cfg in request.summary_settings.column_specific_summaries:
                     if sc_cfg.column_name not in output_columns:
-                        await ctx.warning(f"Summary configuration for column '{sc_cfg.column_name}' provided, but this column is not in the final output. Ignoring.")
+                        await ctx.warning(
+                            f"Summary configuration for column '{sc_cfg.column_name}' provided, but this column is not in the final output. Ignoring."
+                        )
                         continue
                     specific_configs_map[sc_cfg.column_name] = sc_cfg
 
             for col_idx, col_name in enumerate(output_columns):
-                summary_value: Any = None  # Default for each cell in summary row
-                col_series = final_df_to_return[col_name] # Original Polars Series for type checking and aggregation
+                summary_value: Any = None
+                col_series = final_df_to_return[col_name]
                 col_dtype = col_series.dtype
 
                 specific_config = specific_configs_map.get(col_name)
 
                 if specific_config:
-                    # Apply specific configuration
                     if specific_config.summary_function == SummaryFunction.LABEL:
                         summary_value = specific_config.label_text
                     elif specific_config.summary_function == SummaryFunction.NONE:
                         summary_value = None
-                    else: # SUM, MEAN, COUNT, MIN, MAX
+                    else:
                         try:
-                            if final_df_to_return.is_empty() and specific_config.summary_function != SummaryFunction.COUNT:
-                                summary_value = None # Cannot sum, mean, min, max an empty series
-                            elif specific_config.summary_function == SummaryFunction.COUNT:
-                                summary_value = col_series.count() # Polars count() gives number of non-null elements
-                            elif col_dtype in pl.NUMERIC_DTYPES: # Check if dtype is numeric for these aggs
-                                agg_method = getattr(col_series, specific_config.summary_function.value)
+                            if (
+                                final_df_to_return.is_empty()
+                                and specific_config.summary_function
+                                != SummaryFunction.COUNT
+                            ):
+                                summary_value = None
+                            elif (
+                                specific_config.summary_function
+                                == SummaryFunction.COUNT
+                            ):
+                                summary_value = col_series.count()
+                            elif col_dtype in pl.NUMERIC_DTYPES:
+                                agg_method = getattr(
+                                    col_series, specific_config.summary_function.value
+                                )
                                 summary_value = agg_method()
-                            else: # Non-numeric type for arithmetic agg
-                                await ctx.warning(f"Cannot apply numeric summary '{specific_config.summary_function.value}' to non-numeric column '{col_name}' (type: {col_dtype}). Setting summary to None.")
+                            else:
+                                await ctx.warning(
+                                    f"Cannot apply numeric summary '{specific_config.summary_function.value}' to non-numeric column '{col_name}' (type: {col_dtype}). Setting summary to None."
+                                )
                                 summary_value = None
                         except Exception as e:
-                            await ctx.warning(f"Error applying summary function '{specific_config.summary_function.value}' to column '{col_name}': {e}. Setting to None.")
+                            await ctx.warning(
+                                f"Error applying summary function '{specific_config.summary_function.value}' to column '{col_name}': {e}. Setting to None."
+                            )
                             summary_value = None
                 else:
-                    # Apply default configuration
-                    is_first_group_by_col = request.group_by_columns and col_name == request.group_by_columns[0] and col_idx == 0
+                    is_first_group_by_col = (
+                        request.group_by_columns
+                        and col_name == request.group_by_columns[0]
+                        and col_idx == 0
+                    )
 
                     if is_first_group_by_col:
-                        summary_value = request.summary_settings.first_group_by_column_label
+                        summary_value = (
+                            request.summary_settings.first_group_by_column_label
+                        )
                     elif col_name in request.group_by_columns:
-                        summary_value = None # Subsequent group-by columns are blank in summary
+                        summary_value = None
                     elif col_dtype in pl.NUMERIC_DTYPES:
-                        func_to_apply = request.summary_settings.default_numeric_summary_function
-                        if final_df_to_return.is_empty() and func_to_apply != SummaryFunction.COUNT:
-                             summary_value = None
+                        func_to_apply = (
+                            request.summary_settings.default_numeric_summary_function
+                        )
+                        if (
+                            final_df_to_return.is_empty()
+                            and func_to_apply != SummaryFunction.COUNT
+                        ):
+                            summary_value = None
                         elif func_to_apply == SummaryFunction.COUNT:
                             summary_value = col_series.count()
-                        else: # SUM, MEAN, MIN, MAX (already validated it's not LABEL/NONE)
+                        else:
                             try:
                                 agg_method = getattr(col_series, func_to_apply.value)
                                 summary_value = agg_method()
                             except Exception as e:
-                                await ctx.warning(f"Error applying default numeric summary '{func_to_apply.value}' to column '{col_name}': {e}. Setting to None.")
+                                await ctx.warning(
+                                    f"Error applying default numeric summary '{func_to_apply.value}' to column '{col_name}': {e}. Setting to None."
+                                )
                                 summary_value = None
-                    else: # String or other non-numeric, non-group-by column
-                        func_to_apply = request.summary_settings.default_string_summary_function
+                    else:
+                        func_to_apply = (
+                            request.summary_settings.default_string_summary_function
+                        )
                         if func_to_apply == SummaryFunction.LABEL:
-                            # Default string summary as LABEL needs a default text.
-                            # This wasn't in SummaryRowSettings. For now, use None or a generic marker.
-                            # Or, require specific config for string labels.
-                            await ctx.warning(f"Default string summary is 'label' for column '{col_name}' but no specific label_text. Setting to None.")
+                            await ctx.warning(
+                                f"Default string summary is 'label' for column '{col_name}' but no specific label_text. Setting to None."
+                            )
                             summary_value = None
                         elif func_to_apply == SummaryFunction.COUNT:
                             summary_value = col_series.count()
-                        else: # NONE
+                        else:
                             summary_value = None
-                
+
                 summary_row_dict[col_name] = summary_value
-            
+
             results_list_of_dicts.append(summary_row_dict)
             await ctx.info(f"Added summary row to results for '{dataframe_name}'.")
 
         await ctx.info(
             f"Aggregation/calculation for '{dataframe_name}' successful. Final result shape (before to_dicts, excluding summary): {final_df_to_return.shape}, Columns: {final_df_to_return.columns}"
         )
-        return results_list_of_dicts # Return the list of dicts (potentially with summary row)
+        return results_list_of_dicts
 
     except ValueError as ve:
         await ctx.error(

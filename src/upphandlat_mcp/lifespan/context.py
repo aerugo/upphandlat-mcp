@@ -1,4 +1,3 @@
-# src/upphandlat_mcp/lifespan/context.py
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, TypedDict
