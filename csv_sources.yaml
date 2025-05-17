@@ -1,7 +1,9 @@
+toolbox_title: "Upphandlingsdata från Sveriges Upphandlingsmyndighet"
+toolbox_description: "Verktyg för att analysera data om offentliga upphandlingar i Sverige, inklusive antal, värde och leverantörsinformation från Upphandlingsmyndigheten." 
 sources:
   - name: "upphandlingsmyndigheten_antal_upphandlingar"
     url: "https://catalog.upphandlingsmyndigheten.se/store/12/resource/128" 
-    description: "Totalt antal upphandlingar"
+    description: "Totalt antal upphandlingar per år och sektor."
     read_csv_options:
       separator: ";"
       schema_overrides:

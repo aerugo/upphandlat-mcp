@@ -4,7 +4,7 @@
 
 **Upphandlingsdata från Sveriges Upphandlingsmyndighet**
 
-This MCP server, titled "Upphandlingsdata från Sveriges Upphandlingsmyndighet," is a tool designed to analyze data on public procurement in Sweden. It provides access to information regarding the number of procurements, their value, and supplier details sourced from the Swedish National Procurement Agency (Upphandlingsmyndigheten).
+This MCP server is designed to analyze data on public procurement in Sweden. It provides access to information regarding the number of procurements, their value, and supplier details sourced from the Swedish National Procurement Agency (Upphandlingsmyndigheten).
 
 It leverages Polars for high-performance data manipulation and exposes its capabilities via the Model Context Protocol (MCP).
 
@@ -106,37 +106,6 @@ Replace `[path to repo]` with the absolute path to your local repository directo
       ],
       "command": "uv"
     },
-```
-
-## Project Structure
-```
-.
-├── pyproject.toml         # Project metadata and dependencies
-├── csv_sources.yaml       # Configuration for data sources and server identity
-├── README.md              # This file
-└── src/
-    └── upphandlat_mcp/  # Main package
-        ├── __init__.py        # Package initializer and CLI entry point
-        ├── server.py          # MCP server definition and tool registration
-        ├── core/
-        │   ├── __init__.py
-        │   └── config.py      # Pydantic settings for configuration
-        ├── lifespan/
-        │   ├── __init__.py
-        │   └── context.py     # Server lifespan management (e.g., data loading)
-        ├── models/
-        │   ├── __init__.py
-        │   └── mcp_models.py  # Pydantic models for tool arguments/data structures
-        ├── tools/
-        │   ├── __init__.py
-        │   ├── info_tools.py       # Tools for schema/column info
-        │   └── aggregation_tools.py # Tool for data aggregation
-        └── prompts/
-            ├── __init__.py
-            └── entry_prompt.py   # Example entry prompt for LLMs
-        └── utils/
-            ├── __init__.py
-            └── dataframe_ops.py # Utility functions for DataFrame operations
 ```
 
 ## Contributing

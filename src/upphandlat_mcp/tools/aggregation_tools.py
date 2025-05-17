@@ -39,25 +39,25 @@ async def _apply_filters(
             )
 
         col_expr = pl.col(condition.column)
-        value = condition.value # Value has been validated by Pydantic model
+        value = condition.value  # Value has been validated by Pydantic model
 
         current_expr: pl.Expr
-        is_string_op_type = False # Indicates if the operator type is inherently for strings (e.g. contains)
-                                # or if the value provided makes it a string comparison (e.g. equals with string value)
+        is_string_op_type = False  # Indicates if the operator type is inherently for strings (e.g. contains)
+        # or if the value provided makes it a string comparison (e.g. equals with string value)
 
         if condition.operator == FilterOperator.EQUALS:
             if isinstance(value, str):
                 is_string_op_type = True
                 # Always case-insensitive for strings
                 current_expr = col_expr.str.to_lowercase() == str(value).lower()
-            else: # Non-string value, direct comparison
+            else:  # Non-string value, direct comparison
                 current_expr = col_expr == value
         elif condition.operator == FilterOperator.NOT_EQUALS:
             if isinstance(value, str):
                 is_string_op_type = True
                 # Always case-insensitive for strings
                 current_expr = col_expr.str.to_lowercase() != str(value).lower()
-            else: # Non-string value, direct comparison
+            else:  # Non-string value, direct comparison
                 current_expr = col_expr != value
         elif condition.operator == FilterOperator.GREATER_THAN:
             current_expr = col_expr > value
@@ -68,9 +68,11 @@ async def _apply_filters(
         elif condition.operator == FilterOperator.LESS_THAN_OR_EQUAL_TO:
             current_expr = col_expr <= value
         elif condition.operator == FilterOperator.IN:
-            if not isinstance(value, list): # Pydantic should catch this, but defensive
-                raise ValueError(f"Operator 'in' requires a list value for column '{condition.column}'.")
-            
+            if not isinstance(value, list):  # Pydantic should catch this, but defensive
+                raise ValueError(
+                    f"Operator 'in' requires a list value for column '{condition.column}'."
+                )
+
             # Check if the list contains strings to apply case-insensitive logic
             # This assumes a homogeneous list based on the first element, or mixed list handling.
             # A more robust check might iterate through `value` to confirm all are strings if that's a strict requirement.
@@ -78,39 +80,51 @@ async def _apply_filters(
                 is_string_op_type = True
                 # Normalize all string items in the list to lowercase
                 lower_value_list = [str(v).lower() for v in value if isinstance(v, str)]
-                
-                if not lower_value_list and value: # Original list had items, but none were strings
-                     await ctx.warning(f"Operator 'in' for column '{condition.column}' received a list with non-string items when case-insensitive string matching was attempted. Will use original list for matching.")
-                     current_expr = col_expr.is_in(value) # Fallback to original list
-                elif not lower_value_list: # Empty list provided or became empty after filtering non-strings
-                    current_expr = pl.lit(False) # An empty 'is_in' list matches nothing
+
+                if (
+                    not lower_value_list and value
+                ):  # Original list had items, but none were strings
+                    await ctx.warning(
+                        f"Operator 'in' for column '{condition.column}' received a list with non-string items when case-insensitive string matching was attempted. Will use original list for matching."
+                    )
+                    current_expr = col_expr.is_in(value)  # Fallback to original list
+                elif (
+                    not lower_value_list
+                ):  # Empty list provided or became empty after filtering non-strings
+                    current_expr = pl.lit(
+                        False
+                    )  # An empty 'is_in' list matches nothing
                 else:
                     # Apply case-insensitive 'is_in'
                     current_expr = col_expr.str.to_lowercase().is_in(lower_value_list)
-            else: # List of non-strings, or empty list
-                if not value: # Empty list
-                    current_expr = pl.lit(False) # is_in([]) is false
-                else: # Non-string list
+            else:  # List of non-strings, or empty list
+                if not value:  # Empty list
+                    current_expr = pl.lit(False)  # is_in([]) is false
+                else:  # Non-string list
                     current_expr = col_expr.is_in(value)
         elif condition.operator == FilterOperator.NOT_IN:
-            if not isinstance(value, list): # Pydantic should catch this
-                raise ValueError(f"Operator 'not_in' requires a list value for column '{condition.column}'.")
+            if not isinstance(value, list):  # Pydantic should catch this
+                raise ValueError(
+                    f"Operator 'not_in' requires a list value for column '{condition.column}'."
+                )
 
             if value and isinstance(value[0], str):
                 is_string_op_type = True
                 lower_value_list = [str(v).lower() for v in value if isinstance(v, str)]
 
                 if not lower_value_list and value:
-                     await ctx.warning(f"Operator 'not_in' for column '{condition.column}' received a list with non-string items when case-insensitive string matching was attempted. Will use original list for matching.")
-                     current_expr = ~col_expr.is_in(value)
-                elif not lower_value_list: # Empty list provided or became empty
-                    current_expr = pl.lit(True) # Not in an empty list is true for all
+                    await ctx.warning(
+                        f"Operator 'not_in' for column '{condition.column}' received a list with non-string items when case-insensitive string matching was attempted. Will use original list for matching."
+                    )
+                    current_expr = ~col_expr.is_in(value)
+                elif not lower_value_list:  # Empty list provided or became empty
+                    current_expr = pl.lit(True)  # Not in an empty list is true for all
                 else:
                     current_expr = ~col_expr.str.to_lowercase().is_in(lower_value_list)
-            else: # List of non-strings, or empty list
-                if not value: # Empty list
-                    current_expr = pl.lit(True) # not is_in([]) is true
-                else: # Non-string list
+            else:  # List of non-strings, or empty list
+                if not value:  # Empty list
+                    current_expr = pl.lit(True)  # not is_in([]) is true
+                else:  # Non-string list
                     current_expr = ~col_expr.is_in(value)
         elif condition.operator == FilterOperator.CONTAINS:
             if not isinstance(value, str):
@@ -139,9 +153,7 @@ async def _apply_filters(
                 )
             is_string_op_type = True
             # Always case-insensitive
-            current_expr = col_expr.str.to_lowercase().str.ends_with(
-                str(value).lower()
-            )
+            current_expr = col_expr.str.to_lowercase().str.ends_with(str(value).lower())
         elif condition.operator == FilterOperator.IS_NULL:
             current_expr = col_expr.is_null()
         elif condition.operator == FilterOperator.IS_NOT_NULL:
@@ -155,19 +167,39 @@ async def _apply_filters(
         if condition.case_sensitive is True:
             # This warning logic might need refinement based on whether the column itself is a string type,
             # not just if the value is a string. For now, is_string_op_type covers most cases.
-            df_col_is_string_type = df[condition.column].dtype in [pl.Utf8, pl.Categorical]
+            df_col_is_string_type = df[condition.column].dtype in [
+                pl.Utf8,
+                pl.Categorical,
+            ]
 
-            if is_string_op_type or (df_col_is_string_type and condition.operator in [FilterOperator.EQUALS, FilterOperator.NOT_EQUALS, FilterOperator.IN, FilterOperator.NOT_IN]):
+            if is_string_op_type or (
+                df_col_is_string_type
+                and condition.operator
+                in [
+                    FilterOperator.EQUALS,
+                    FilterOperator.NOT_EQUALS,
+                    FilterOperator.IN,
+                    FilterOperator.NOT_IN,
+                ]
+            ):
                 await ctx.warning(
                     f"Filter 'case_sensitive=True' on column '{condition.column}' with operator '{condition.operator.value}' "
                     f"is noted, but string comparisons are now always case-insensitive by default."
                 )
-            elif not is_string_op_type and not (df_col_is_string_type and condition.operator in [FilterOperator.EQUALS, FilterOperator.NOT_EQUALS, FilterOperator.IN, FilterOperator.NOT_IN]):
-                 await ctx.warning(
+            elif not is_string_op_type and not (
+                df_col_is_string_type
+                and condition.operator
+                in [
+                    FilterOperator.EQUALS,
+                    FilterOperator.NOT_EQUALS,
+                    FilterOperator.IN,
+                    FilterOperator.NOT_IN,
+                ]
+            ):
+                await ctx.warning(
                     f"Filter 'case_sensitive=True' on column '{condition.column}' with operator '{condition.operator.value}' "
                     f"is ignored as the operation is not on string data or not a relevant string comparison type."
                 )
-
 
         if combined_filter_expr is None:
             combined_filter_expr = current_expr
