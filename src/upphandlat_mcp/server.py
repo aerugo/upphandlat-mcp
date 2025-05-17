@@ -30,7 +30,7 @@ mcp.tool()(aggregate_data)
 mcp.prompt(name="csv_aggregator_guidance")(csv_aggregator_entry_point)
 
 
-async def run_mcp() -> None:
+def run_mcp() -> None:
     logger.info(f"Starting MCP server '{mcp.name}' on stdio...")
     try:
         mcp.run(transport="stdio")

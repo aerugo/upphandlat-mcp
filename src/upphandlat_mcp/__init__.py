@@ -1,5 +1,4 @@
 # src/upphandlat_mcp/__init__.py
-import asyncio
 import logging
 import sys
 
@@ -29,8 +28,8 @@ def main() -> None:
         # were imported by other modules at load time.
         from upphandlat_mcp.server import run_mcp
 
-        # Run the asynchronous run_mcp function using asyncio.run()
-        asyncio.run(run_mcp())
+        # Run the run_mcp function
+        run_mcp()
         logger.info("upphandlat-mcp CLI execution finished successfully.")
 
     except ImportError as e:
