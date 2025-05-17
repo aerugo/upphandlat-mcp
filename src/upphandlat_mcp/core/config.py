@@ -5,6 +5,11 @@ import polars as pl
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Define the project root directory.
+# This file (config.py) is at: PROJECT_ROOT/src/upphandlat_mcp/core/config.py
+# So, four .parent calls from __file__ will get us to PROJECT_ROOT
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
 POLARS_DTYPE_MAP = {
     "Utf8": pl.Utf8,
     "Int8": pl.Int8,
@@ -95,7 +100,8 @@ class Settings(BaseSettings):
     Application settings.
     """
 
-    CSV_SOURCES_CONFIG_PATH: Path = Path("csv_sources.yaml")
+    # Use the PROJECT_ROOT to define an absolute path to csv_sources.yaml
+    CSV_SOURCES_CONFIG_PATH: Path = PROJECT_ROOT / "csv_sources.yaml"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
